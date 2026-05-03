@@ -139,10 +139,11 @@ async function scrapeAllPets(force = false) {
   try {
     console.log("[scrape] loading page...");
     await page.goto("https://elvebredd.com/adopt-me-calculator", {
-      waitUntil: "networkidle2",
+      waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    await new Promise(r => setTimeout(r, 5000));
+    // Wait for Next.js to stream pet data into the page
+    await new Promise(r => setTimeout(r, 8000));
 
     if (!petData || petData.length === 0) throw new Error("Could not extract pet data from page.");
 
