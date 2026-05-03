@@ -12,19 +12,17 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({
-  origin: "*"
-}));
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ── History stored as a simple JSON file ──────────────────────────────────────
+// ── History ───────────────────────────────────────────────────────────────────
 const HISTORY_PATH = path.join(__dirname, "history.json");
 
 function loadHistory() {
   try {
     if (fs.existsSync(HISTORY_PATH)) return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf8"));
   } catch(e) { console.log("[history] load error:", e.message); }
-  return {}; // { "Bat Dragon": [ { ts, value, neonValue, megaValue }, ... ] }
+  return {};
 }
 
 function saveHistory(history) {
@@ -38,7 +36,6 @@ function addSnapshot(pets) {
   for (const p of pets) {
     if (!history[p.name]) history[p.name] = [];
     history[p.name].push({ ts: now, value: p.value, neonValue: p.neonValue, megaValue: p.megaValue });
-    // Keep max 1000 snapshots per pet to avoid the file growing forever
     if (history[p.name].length > 1000) history[p.name] = history[p.name].slice(-1000);
   }
   saveHistory(history);
@@ -47,15 +44,22 @@ function addSnapshot(pets) {
 
 function getHistory(petName, range) {
   const history = loadHistory();
-  // Case-insensitive match
   const key = Object.keys(history).find(k => k.toLowerCase() === petName.toLowerCase());
   if (!key) return [];
-
   const now = Date.now();
   const since = { day: now - 86400000, month: now - 2592000000, year: now - 31536000000 }[range] ?? now - 2592000000;
   const all = history[key];
   const filtered = all.filter(s => s.ts >= since);
-  return filtered.length >= 2 ? filtered : all; // fall back to all if not enough in range
+  return filtered.length >= 2 ? filtered : all;
+}
+
+// ── Auto-snapshot every 30 minutes ───────────────────────────────────────────
+const SNAPSHOT_INTERVAL = 30 * 60 * 1000;
+
+async function autoSnapshot() {
+  if (petCache.length === 0) return;
+  console.log("[auto-snapshot] saving snapshot...");
+  addSnapshot(petCache);
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -72,11 +76,11 @@ async function scrapeAllPets(force = false) {
 
   console.log("[scrape] launching browser...");
   const browser = await puppeteer.launch({
-  args: chromium.args,
-  defaultViewport: chromium.defaultViewport,
-  executablePath: await chromium.executablePath(),
-  headless: chromium.headless,
-});
+    args: chromium.args,
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
+  });
 
   const page = await browser.newPage();
   await page.setRequestInterception(true);
@@ -136,9 +140,9 @@ async function scrapeAllPets(force = false) {
     console.log("[scrape] loading page...");
     await page.goto("https://elvebredd.com/adopt-me-calculator", {
       waitUntil: "networkidle2",
-      timeout: 30000,
+      timeout: 60000,
     });
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 5000));
 
     if (!petData || petData.length === 0) throw new Error("Could not extract pet data from page.");
 
@@ -146,11 +150,24 @@ async function scrapeAllPets(force = false) {
       .filter(p => p.name && p.type === "pets")
       .map(p => ({
         name: p.name,
-        value: p.rvalue ?? null,
-        neonValue: p.nvalue ?? null,
-        megaValue: p.mvalue ?? null,
-        rarity: p.rarity ?? null,
-        image: p.image ? `https://elvebredd.com${p.image}` : null,
+        value:      p.rvalue ?? null,
+        neonValue:  p.nvalue ?? null,
+        megaValue:  p.mvalue ?? null,
+        rarity:     p.rarity ?? null,
+        image:      p.image ? `https://elvebredd.com${p.image}` : null,
+        // Variants
+        valueFlyRide: p["rvalue - fly&ride"] ?? null,
+        valueFly:     p["rvalue - fly"]      ?? null,
+        valueRide:    p["rvalue - ride"]     ?? null,
+        valueNoPot:   p["rvalue - nopotion"] ?? null,
+        neonFlyRide:  p["nvalue - fly&ride"] ?? null,
+        neonFly:      p["nvalue - fly"]      ?? null,
+        neonRide:     p["nvalue - ride"]     ?? null,
+        neonNoPot:    p["nvalue - nopotion"] ?? null,
+        megaFlyRide:  p["mvalue - fly&ride"] ?? null,
+        megaFly:      p["mvalue - fly"]      ?? null,
+        megaRide:     p["mvalue - ride"]     ?? null,
+        megaNoPot:    p["mvalue - nopotion"] ?? null,
       }));
 
     petCache = mapped;
@@ -220,6 +237,7 @@ app.get("/api/cache/clear", (req, res) => {
   res.json({ ok: true, message: "Cache cleared" });
 });
 
+// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n✅  Adopt Me proxy running → http://localhost:${PORT}`);
   console.log(`   http://localhost:${PORT}/api/pets/all`);
@@ -230,19 +248,6 @@ app.listen(PORT, () => {
   } else {
     console.log("[history] no history file yet — will be created on first scrape");
   }
-  // Save a snapshot every 30 minutes automatically
   setInterval(autoSnapshot, SNAPSHOT_INTERVAL);
   console.log("[auto-snapshot] will save every 30 minutes");
 });
-
-// ── Auto-snapshot every 30 minutes ───────────────────────────────────────────
-// This runs independently of user requests so history builds up automatically
-const SNAPSHOT_INTERVAL = 30 * 60 * 1000; // 30 minutes
-
-async function autoSnapshot() {
-  if (petCache.length === 0) return; // nothing cached yet
-  console.log("[auto-snapshot] saving snapshot...");
-  addSnapshot(petCache);
-}
-
-// Remove the last line (app.listen) and re-add with interval
