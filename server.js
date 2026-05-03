@@ -1,6 +1,7 @@
 process.env.PUPPETEER_CACHE_DIR = "/opt/render/.cache/puppeteer";
 const express = require("express");
 const puppeteer = require("puppeteer-extra");
+const chromium = require("@sparticuz/chromium");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const cors = require("cors");
 const fs = require("fs");
@@ -71,9 +72,10 @@ async function scrapeAllPets(force = false) {
 
   console.log("[scrape] launching browser...");
   const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+  args: chromium.args,
+  defaultViewport: chromium.defaultViewport,
+  executablePath: await chromium.executablePath(),
+  headless: chromium.headless,
 });
 
   const page = await browser.newPage();
