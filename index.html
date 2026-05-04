@@ -262,7 +262,7 @@
 </div>
 
 <script>
-const API = "https://adoptmevaluetracker.onrender.com";
+const API = "http://localhost:3001";
 const SEEN_KEY = "adoptme_seen_pets";
 
 const rarityColor = r => ({
@@ -428,7 +428,7 @@ function openModal(pet) {
 
   document.getElementById("modal-overlay").classList.add("open");
   document.body.style.overflow = "hidden";
-  loadChart(pet, "day");
+  loadChart(pet, "day", "flyride");
 }
 
 function closeModal() {
@@ -437,7 +437,23 @@ function closeModal() {
   if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
 }
 
-async function loadChart(pet, range) {
+// Maps variant -> history JSON keys (history stores base values only,
+// so we compute variant from the ratio between base and variant on current pet)
+function getVariantMultipliers(pet, variant) {
+  // Returns { reg, neon, mega } multipliers to scale history values
+  // Since history only stores base rvalue, we use current pet data to get ratio
+  const keys = VARIANT_KEYS[variant];
+  const regBase = pet.value, regVar = pet[keys.reg];
+  const neonBase = pet.neonValue, neonVar = pet[keys.neon];
+  const megaBase = pet.megaValue, megaVar = pet[keys.mega];
+  return {
+    reg:  (regBase  && regVar)  ? regVar  / regBase  : 1,
+    neon: (neonBase && neonVar) ? neonVar / neonBase : 1,
+    mega: (megaBase && megaVar) ? megaVar / megaBase : 1,
+  };
+}
+
+async function loadChart(pet, range, variant = "flyride") {
   const area = document.getElementById("chart-area");
   const noteEl = document.getElementById("chart-note");
   noteEl.style.display = "none";
@@ -461,13 +477,15 @@ async function loadChart(pet, range) {
     }
 
     const labels = history.map(h => formatDate(h.ts, range));
-    const makeDataset = (label, key, color) => ({
-      label, data: history.map(h => h[key]),
+    const mults = getVariantMultipliers(pet, variant);
+    const makeDataset = (label, key, mult, color) => ({
+      label, data: history.map(h => h[key] != null ? Math.round(h[key] * mult * 100) / 100 : null),
       borderColor: color, backgroundColor: color + "18",
       borderWidth: 2, pointRadius: history.length > 50 ? 0 : 3,
       pointHoverRadius: 5, tension: 0.3, fill: false, spanGaps: true,
     });
 
+    const variantLabels = { flyride: "Fly & Ride", fly: "Fly", ride: "Ride", nopot: "No Potion" };
     area.innerHTML = `<div class="chart-wrap"><canvas id="myChart"></canvas></div>`;
     if (chartInstance) chartInstance.destroy();
     chartInstance = new Chart(document.getElementById("myChart").getContext("2d"), {
@@ -475,9 +493,9 @@ async function loadChart(pet, range) {
       data: {
         labels,
         datasets: [
-          { ...makeDataset("Regular", "value",     "#60a5fa"), yAxisID: "yReg"  },
-          { ...makeDataset("Neon",    "neonValue",  "#a78bfa"), yAxisID: "yNeon" },
-          { ...makeDataset("Mega",    "megaValue",  "#f59e0b"), yAxisID: "yMega" },
+          { ...makeDataset("Regular", "value",     mults.reg,  "#60a5fa"), yAxisID: "yReg"  },
+          { ...makeDataset("Neon",    "neonValue",  mults.neon, "#a78bfa"), yAxisID: "yNeon" },
+          { ...makeDataset("Mega",    "megaValue",  mults.mega, "#f59e0b"), yAxisID: "yMega" },
         ],
       },
       options: {
@@ -566,6 +584,9 @@ document.getElementById("variantTabs").addEventListener("click", e => {
   tab.classList.add("active");
   currentVariant = tab.dataset.variant;
   updateModalValues(currentPet, currentVariant);
+  // Reload chart with new variant
+  document.querySelectorAll(".series-btn").forEach(b => b.classList.add("active"));
+  loadChart(currentPet, currentRange, currentVariant);
 });
 
 document.getElementById("rangeTabs").addEventListener("click", e => {
@@ -574,7 +595,7 @@ document.getElementById("rangeTabs").addEventListener("click", e => {
   document.querySelectorAll(".range-tab").forEach(t => t.classList.remove("active"));
   tab.classList.add("active");
   currentRange = tab.dataset.range;
-  loadChart(currentPet, currentRange);
+  loadChart(currentPet, currentRange, currentVariant);
 });
 
 document.getElementById("grid").addEventListener("click", e => {
