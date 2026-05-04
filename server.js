@@ -36,7 +36,7 @@ function addSnapshot(pets) {
   for (const p of pets) {
     if (!history[p.name]) history[p.name] = [];
     history[p.name].push({ ts: now, value: p.value, neonValue: p.neonValue, megaValue: p.megaValue });
-    if (history[p.name].length > 1000) history[p.name] = history[p.name].slice(-1000);
+    if (history[p.name].length > 1500) history[p.name] = history[p.name].slice(-1500);
   }
   saveHistory(history);
   console.log(`[history] saved snapshots for ${pets.length} pets`);
