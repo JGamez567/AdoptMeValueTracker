@@ -262,7 +262,7 @@
 </div>
 
 <script>
-const API = "https://adoptmevaluetracker.onrender.com";
+const API = "http://localhost:3001";
 const SEEN_KEY = "adoptme_seen_pets";
 
 const rarityColor = r => ({
@@ -480,9 +480,17 @@ async function loadChart(pet, range, variant = "flyride") {
     const mults = getVariantMultipliers(pet, variant);
     const makeDataset = (label, key, mult, color) => ({
       label, data: history.map(h => h[key] != null ? Math.round(h[key] * mult * 100) / 100 : null),
-      borderColor: color, backgroundColor: color + "18",
-      borderWidth: 2, pointRadius: history.length > 50 ? 0 : 3,
-      pointHoverRadius: 5, tension: 0.3, fill: false, spanGaps: true,
+      borderColor: color,
+      backgroundColor: color + "22",
+      borderWidth: 2.5,
+      pointRadius: history.length <= 10 ? 5 : history.length <= 50 ? 3 : 0,
+      pointHoverRadius: 7,
+      pointBackgroundColor: color,
+      pointBorderColor: "#0a0a0f",
+      pointBorderWidth: 2,
+      tension: history.length <= 3 ? 0 : 0.4,
+      fill: false,
+      spanGaps: true,
     });
 
     const variantLabels = { flyride: "Fly & Ride", fly: "Fly", ride: "Ride", nopot: "No Potion" };
@@ -504,32 +512,49 @@ async function loadChart(pet, range, variant = "flyride") {
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderWidth: 1,
-            titleColor: "#9ca3af", bodyColor: "#e5e7eb", padding: 12,
+            backgroundColor: "#111827",
+            borderColor: "rgba(255,255,255,0.12)",
+            borderWidth: 1,
+            titleColor: "#9ca3af",
+            bodyColor: "#e5e7eb",
+            padding: 14,
+            cornerRadius: 10,
+            displayColors: true,
+            boxWidth: 8, boxHeight: 8, boxPadding: 4,
             callbacks: {
-              label: ctx => ctx.dataset.hidden ? null : ` ${ctx.dataset.label}: ${formatVal(ctx.raw)}`,
+              title: items => items[0]?.label ?? "",
+              label: ctx => ctx.dataset.hidden ? null : `  ${ctx.dataset.label}: ${formatVal(ctx.raw)}`,
             },
           },
         },
         scales: {
           x: {
-            ticks: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, maxTicksLimit: 8 },
-            grid: { color: "rgba(255,255,255,0.04)" }
+            ticks: {
+              color: "#6b7280",
+              font: { family: "DM Mono", size: 10 },
+              maxTicksLimit: 6,
+              maxRotation: 0,
+            },
+            grid: { color: "rgba(255,255,255,0.06)" },
+            border: { color: "rgba(255,255,255,0.1)" },
           },
           yReg: {
             type: "linear", display: "auto", position: "left",
-            ticks: { color: "#60a5fa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
-            grid: { color: "rgba(255,255,255,0.04)" },
+            ticks: { color: "#60a5fa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v), maxTicksLimit: 6 },
+            grid: { color: "rgba(255,255,255,0.06)" },
+            border: { color: "rgba(255,255,255,0.1)" },
           },
           yNeon: {
             type: "linear", display: "auto", position: "left",
-            ticks: { color: "#a78bfa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
+            ticks: { color: "#a78bfa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v), maxTicksLimit: 6 },
             grid: { drawOnChartArea: false },
+            border: { color: "rgba(255,255,255,0.1)" },
           },
           yMega: {
             type: "linear", display: "auto", position: "right",
-            ticks: { color: "#f59e0b", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
+            ticks: { color: "#f59e0b", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v), maxTicksLimit: 6 },
             grid: { drawOnChartArea: false },
+            border: { color: "rgba(255,255,255,0.1)" },
           },
         },
       },
