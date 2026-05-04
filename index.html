@@ -563,7 +563,7 @@ async function loadPets(force = false) {
     if (!data.ok) throw new Error(data.error);
 
     // Only show actual pets
-    const pets = data.pets.filter(p => p.type === "pets");
+   const pets = data.pets;
 
     markAllSeen(pets);
     newPetNames = new Set(pets.filter(p => isNewPet(p.name)).map(p => p.name));
