@@ -48,6 +48,7 @@
   .filter-btn[data-rarity="uncommon"].active { color: var(--uncommon); }
   .filter-btn[data-rarity="new"].active { color: var(--new); }
   .filter-btn[data-rarity="rising"].active { color: #10b981; }
+  .filter-btn[data-rarity="falling"].active { color: #f43f5e; }
   .refresh-btn {
     background: rgba(255,255,255,0.05); border: 1px solid var(--border);
     border-radius: 8px; color: var(--text); cursor: pointer;
@@ -70,16 +71,22 @@
   }
   .pet-card:hover { border-color: rgba(255,255,255,0.2); transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
   .pet-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--card-color, transparent); }
+
   .pet-card.is-new::after {
     content: 'NEW'; position: absolute; top: 10px; right: 10px;
     background: var(--new); color: white; font-family: 'DM Mono', monospace;
     font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
   }
   .pet-card.is-rising::after {
-    content: '🚀'; position: absolute; top: 10px; right: 10px;
-    font-size: 14px;
+    content: '🚀'; position: absolute; top: 10px; right: 10px; font-size: 14px;
+  }
+  .pet-card.is-falling::after {
+    content: '📉'; position: absolute; top: 10px; right: 10px; font-size: 14px;
   }
   .pet-card.is-new.is-rising::after { content: '🆕🚀'; font-size: 11px; }
+  .pet-card.is-new.is-falling::after { content: '🆕📉'; font-size: 11px; }
+  .pet-card.is-rising.is-falling::after { content: ''; }
+
   .chart-hint { font-family: 'DM Mono', monospace; font-size: 9px; color: var(--muted); text-align: center; opacity: 0; transition: opacity 0.2s; }
   .pet-card:hover .chart-hint { opacity: 1; }
   .pet-top { display: flex; align-items: center; gap: 10px; }
@@ -95,6 +102,15 @@
   .val-box.reg .val-num { color: var(--reg); }
   .val-box.neon .val-num { color: var(--neon); }
   .val-box.mega .val-num { color: var(--mega); }
+
+  /* Falling indicator on card */
+  .change-badge {
+    position: absolute; bottom: 10px; right: 10px;
+    font-family: 'DM Mono', monospace; font-size: 10px; font-weight: 700;
+    padding: 2px 7px; border-radius: 4px;
+  }
+  .change-badge.up { background: rgba(16,185,129,0.15); color: #10b981; }
+  .change-badge.down { background: rgba(244,63,94,0.15); color: #f43f5e; }
 
   /* Modal */
   #modal-overlay {
@@ -116,6 +132,9 @@
   .modal-img-placeholder { width: 64px; height: 64px; border-radius: 12px; background: rgba(255,255,255,0.04); display: flex; align-items: center; justify-content: center; font-size: 32px; }
   .modal-name { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
   .modal-rarity { font-family: 'DM Mono', monospace; font-size: 12px; margin-top: 4px; text-transform: capitalize; }
+  .modal-change { font-family: 'DM Mono', monospace; font-size: 13px; margin-top: 6px; }
+  .modal-change.up { color: #10b981; }
+  .modal-change.down { color: #f43f5e; }
   .close-btn {
     background: rgba(255,255,255,0.05); border: 1px solid var(--border);
     border-radius: 8px; color: var(--muted); cursor: pointer; font-size: 18px;
@@ -124,18 +143,15 @@
   }
   .close-btn:hover { color: var(--text); background: rgba(255,255,255,0.1); }
 
-  /* Variant tabs */
   .variant-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
   .variant-tab {
     background: rgba(255,255,255,0.04); border: 1px solid var(--border);
     border-radius: 6px; color: var(--muted); cursor: pointer;
-    font-family: 'DM Mono', monospace; font-size: 11px; padding: 6px 12px;
-    transition: all 0.15s;
+    font-family: 'DM Mono', monospace; font-size: 11px; padding: 6px 12px; transition: all 0.15s;
   }
   .variant-tab:hover { color: var(--text); }
   .variant-tab.active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); color: var(--text); }
 
-  /* Values grid */
   .modal-values { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
   .modal-val { background: var(--surface2); border-radius: 10px; padding: 14px; text-align: center; border: 1px solid var(--border); }
   .modal-val-label { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
@@ -164,8 +180,7 @@
     display: flex; align-items: center; gap: 6px;
     background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
     border-radius: 6px; color: var(--muted); cursor: pointer;
-    font-family: 'DM Mono', monospace; font-size: 11px; padding: 5px 10px;
-    transition: all 0.15s;
+    font-family: 'DM Mono', monospace; font-size: 11px; padding: 5px 10px; transition: all 0.15s;
   }
   .series-btn.active { color: var(--sc); border-color: var(--sc); background: rgba(255,255,255,0.06); }
   .series-btn:not(.active) { opacity: 0.4; }
@@ -194,6 +209,7 @@
       <button class="filter-btn" data-rarity="common">Common</button>
       <button class="filter-btn" data-rarity="new" style="color:var(--new)">🆕 New</button>
       <button class="filter-btn" data-rarity="rising" style="color:#10b981">🚀 Rising</button>
+      <button class="filter-btn" data-rarity="falling" style="color:#f43f5e">📉 Falling</button>
     </div>
     <span class="stats" id="stats"></span>
     <button class="refresh-btn" id="refreshBtn">↻ Refresh</button>
@@ -216,12 +232,12 @@
         <div>
           <div class="modal-name" id="modal-name"></div>
           <div class="modal-rarity" id="modal-rarity"></div>
+          <div class="modal-change" id="modal-change"></div>
         </div>
       </div>
       <button class="close-btn" id="closeModal">✕</button>
     </div>
 
-    <!-- Variant tabs -->
     <div>
       <p style="font-size:11px;color:var(--muted);font-family:'DM Mono',monospace;margin-bottom:8px">VARIANT</p>
       <div class="variant-tabs" id="variantTabs">
@@ -259,32 +275,48 @@
 </div>
 
 <script>
-const API = "https://adoptmevaluetracker.onrender.com";
+const API = "http://localhost:3001";
 const SEEN_KEY = "adoptme_seen_pets";
+const HISTORY_KEY = "adoptme_value_history";
 
 const rarityColor = r => ({
   legendary: "#f59e0b", "ultra rare": "#8b5cf6",
   rare: "#3b82f6", uncommon: "#10b981", common: "#6b7280",
 }[(r ?? "").toLowerCase()] ?? "#6b7280");
 
-// Maps variant key -> pet object keys for reg/neon/mega
 const VARIANT_KEYS = {
-  flyride: { reg: "valueFlyRide",  neon: "neonFlyRide",  mega: "megaFlyRide"  },
-  fly:     { reg: "valueFly",      neon: "neonFly",      mega: "megaFly"      },
-  ride:    { reg: "valueRide",     neon: "neonRide",     mega: "megaRide"     },
-  nopot:   { reg: "valueNoPot",    neon: "neonNoPot",    mega: "megaNoPot"    },
+  flyride: { reg: "value",     neon: "neonValue",  mega: "megaValue"  },
+  fly:     { reg: "valueFly",  neon: "neonFly",    mega: "megaFly"    },
+  ride:    { reg: "valueRide", neon: "neonRide",   mega: "megaRide"   },
+  nopot:   { reg: "valueNoPot",neon: "neonNoPot",  mega: "megaNoPot"  },
 };
 
 let allPets = [], activeRarity = "all", searchQuery = "", newPetNames = new Set();
 let chartInstance = null, currentPet = null, currentRange = "day", currentVariant = "flyride";
+let risingPets = new Set();
+let fallingPets = new Set();
+let localHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || "{}");
 
-const NEW_PET_TTL = 48 * 60 * 60 * 1000; // 48 hours
+const NEW_PET_TTL = 48 * 60 * 60 * 1000;
+
+function saveLocalHistory() {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(localHistory));
+}
+
+function logValue(name, value) {
+  if (!value) return;
+  if (!localHistory[name]) localHistory[name] = [];
+  const last = localHistory[name].at(-1);
+  if (!last || last.v !== value) {
+    localHistory[name].push({ t: Date.now(), v: value });
+    if (localHistory[name].length > 200) localHistory[name].shift();
+  }
+}
 
 function getSeenPets() {
   try {
     const raw = JSON.parse(localStorage.getItem(SEEN_KEY) ?? "{}");
-    // Support both old format (array) and new format (object with timestamps)
-    if (Array.isArray(raw)) return new Map(raw.map(n => [n, 0])); // old format, treat as ancient
+    if (Array.isArray(raw)) return new Map(raw.map(n => [n, 0]));
     return new Map(Object.entries(raw));
   } catch { return new Map(); }
 }
@@ -293,7 +325,7 @@ function markAllSeen(pets) {
   const seen = getSeenPets();
   const now = Date.now();
   for (const p of pets) {
-    if (!seen.has(p.name)) seen.set(p.name, now); // only set timestamp if brand new
+    if (!seen.has(p.name)) seen.set(p.name, now);
   }
   localStorage.setItem(SEEN_KEY, JSON.stringify(Object.fromEntries(seen)));
 }
@@ -302,7 +334,7 @@ function isNewPet(name) {
   const seen = getSeenPets();
   if (!seen.has(name)) return false;
   const ts = seen.get(name);
-  if (ts === 0) return false; // old format, not new
+  if (ts === 0) return false;
   return Date.now() - ts < NEW_PET_TTL;
 }
 
@@ -312,6 +344,7 @@ function formatVal(v) {
   if (v >= 1000) return (v/1000).toFixed(1) + "k";
   return Number(v).toLocaleString();
 }
+
 function formatDate(ts, range) {
   const d = new Date(ts);
   if (range === "day") return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -319,40 +352,53 @@ function formatDate(ts, range) {
   return d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// ── Rising pets ──────────────────────────────────────────────────────────────
-let risingPets = new Set();
-
-async function detectRisingPets() {
+// Detect rising and falling from local history
+function detectMovers() {
   risingPets = new Set();
-  // Sample up to 50 pets to avoid hammering the API - prioritize legendary/ultra rare
-  const priority = allPets.filter(p => ["legendary","ultra rare"].includes((p.rarity??"").toLowerCase()));
-  const rest = allPets.filter(p => !["legendary","ultra rare"].includes((p.rarity??"").toLowerCase()));
-  const toCheck = [...priority, ...rest].slice(0, 80);
+  fallingPets = new Set();
+  const dayAgo = Date.now() - 86400000;
 
-  await Promise.all(toCheck.map(async pet => {
-    try {
-      const res = await fetch(`${API}/api/pet/${encodeURIComponent(pet.name)}/history?range=day`);
-      const data = await res.json();
-      const h = data.history ?? [];
-      if (h.length < 2) return;
-      const first = h[0].value, last = h[h.length-1].value;
-      if (first != null && last != null && (last - first) >= 3) {
-        risingPets.add(pet.name);
-      }
-    } catch(_) {}
-  }));
+  for (const pet of allPets) {
+    const h = localHistory[pet.name];
+    if (!h || h.length < 2) continue;
+    const recent = h.filter(x => x.t >= dayAgo);
+    if (recent.length < 2) continue;
+    const first = recent[0].v;
+    const last = recent[recent.length - 1].v;
+    const diff = last - first;
+    const pct = first > 0 ? (diff / first) * 100 : 0;
+    if (diff > 0 && pct >= 1) risingPets.add(pet.name);
+    if (diff < 0 && Math.abs(pct) >= 1) fallingPets.add(pet.name);
+  }
+  console.log(`[movers] ${risingPets.size} rising, ${fallingPets.size} falling`);
+}
 
-  console.log(`[rising] found ${risingPets.size} rising pets`);
-  // Re-render if currently on rising tab
-  if (activeRarity === "rising") render();
+function getDayChange(name) {
+  const h = localHistory[name];
+  if (!h || h.length < 2) return null;
+  const dayAgo = Date.now() - 86400000;
+  const recent = h.filter(x => x.t >= dayAgo);
+  if (recent.length < 2) {
+    // Fall back to any two points
+    const first = h[0].v, last = h[h.length-1].v;
+    return last - first;
+  }
+  return recent[recent.length-1].v - recent[0].v;
 }
 
 function renderCard(pet) {
   const color = rarityColor(pet.rarity);
   const isNew = newPetNames.has(pet.name);
-  const imgSrc = pet.image ?? `https://elvebredd.com/images/pets/${pet.name.replace(/ /g,"-")}.png`;
+  const isRising = risingPets.has(pet.name);
+  const isFalling = fallingPets.has(pet.name);
+  const imgSrc = pet.image || `https://elvebredd.com/images/pets/${encodeURIComponent(pet.name)}.png`;
+  const change = getDayChange(pet.name);
+  const changeBadge = change !== null && change !== 0
+    ? `<div class="change-badge ${change > 0 ? 'up' : 'down'}">${change > 0 ? '+' : ''}${formatVal(change)}</div>`
+    : '';
+
   return `
-    <div class="pet-card ${isNew?"is-new":""}${risingPets.has(pet.name)?" is-rising":""}" style="--card-color:${color}" data-name="${pet.name}">
+    <div class="pet-card ${isNew?"is-new":""}${isRising?" is-rising":""}${isFalling?" is-falling":""}" style="--card-color:${color}" data-name="${pet.name}">
       <div class="pet-top">
         <img class="pet-img" src="${imgSrc}" alt="${pet.name}"
           onerror="this.outerHTML='<div class=\\'pet-img-placeholder\\'>🐾</div>'">
@@ -366,6 +412,7 @@ function renderCard(pet) {
         <div class="val-box neon"><span class="val-label">Neon</span><span class="val-num">${formatVal(pet.neonValue)}</span></div>
         <div class="val-box mega"><span class="val-label">Mega</span><span class="val-num">${formatVal(pet.megaValue)}</span></div>
       </div>
+      ${changeBadge}
       <div class="chart-hint">📈 Click for details & history</div>
     </div>`;
 }
@@ -375,6 +422,7 @@ function render() {
   let filtered = allPets;
   if (activeRarity === "new") filtered = filtered.filter(p => newPetNames.has(p.name));
   else if (activeRarity === "rising") filtered = filtered.filter(p => risingPets.has(p.name));
+  else if (activeRarity === "falling") filtered = filtered.filter(p => fallingPets.has(p.name));
   else if (activeRarity !== "all") filtered = filtered.filter(p => (p.rarity ?? "").toLowerCase() === activeRarity);
   if (searchQuery) filtered = filtered.filter(p => p.name.toLowerCase().includes(searchQuery));
   document.getElementById("stats").textContent = `${filtered.length} / ${allPets.length} pets`;
@@ -404,7 +452,15 @@ function openModal(pet) {
   currentVariant = "flyride";
 
   const color = rarityColor(pet.rarity);
-  const imgSrc = pet.image ?? `https://elvebredd.com/images/pets/${pet.name.replace(/ /g,"-")}.png`;
+  const imgSrc = pet.image || `https://elvebredd.com/images/pets/${encodeURIComponent(pet.name)}.png`;
+  const change = getDayChange(pet.name);
+  const changeEl = document.getElementById("modal-change");
+  if (change !== null && change !== 0) {
+    changeEl.textContent = (change > 0 ? "▲ +" : "▼ ") + formatVal(change) + " today";
+    changeEl.className = "modal-change " + (change > 0 ? "up" : "down");
+  } else {
+    changeEl.textContent = "";
+  }
 
   document.getElementById("modal-name").textContent = pet.name;
   document.getElementById("modal-rarity").textContent = pet.rarity ?? "Unknown";
@@ -417,10 +473,9 @@ function openModal(pet) {
   document.querySelectorAll(".series-btn").forEach(b => b.classList.add("active"));
 
   updateModalValues(pet, "flyride");
-
   document.getElementById("modal-overlay").classList.add("open");
   document.body.style.overflow = "hidden";
-  loadChart(pet, "day");
+  renderLocalChart(pet, "day");
 }
 
 function closeModal() {
@@ -429,88 +484,68 @@ function closeModal() {
   if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
 }
 
-async function loadChart(pet, range) {
+function renderLocalChart(pet, range) {
   const area = document.getElementById("chart-area");
   const noteEl = document.getElementById("chart-note");
   noteEl.style.display = "none";
-  area.innerHTML = `<div class="chart-loading"><div class="spinner"></div></div>`;
 
-  try {
-    const res = await fetch(`${API}/api/pet/${encodeURIComponent(pet.name)}/history?range=${range}`);
-    const data = await res.json();
-    const history = data.history ?? [];
+  let h = localHistory[pet.name] || [];
+  if (range === "day") h = h.filter(x => x.t >= Date.now() - 86400000);
+  else if (range === "month") h = h.filter(x => x.t >= Date.now() - 30*86400000);
 
-    if (data.note) { noteEl.textContent = "⚠ " + data.note; noteEl.style.display = "block"; }
-
-    if (history.length < 2) {
-      area.innerHTML = `
-        <div class="chart-empty">
-          <div class="chart-empty-icon">📊</div>
-          <p>Not enough data yet for this range</p>
-          <p style="font-size:11px;font-family:monospace;color:#374151">Each time you hit ↻ Refresh a new data point is saved</p>
-        </div>`;
-      return;
-    }
-
-    const labels = history.map(h => formatDate(h.ts, range));
-    const makeDataset = (label, key, color) => ({
-      label, data: history.map(h => h[key]),
-      borderColor: color, backgroundColor: color + "18",
-      borderWidth: 2, pointRadius: history.length > 50 ? 0 : 3,
-      pointHoverRadius: 5, tension: 0.3, fill: false, spanGaps: true,
-    });
-
-    area.innerHTML = `<div class="chart-wrap"><canvas id="myChart"></canvas></div>`;
-    if (chartInstance) chartInstance.destroy();
-    chartInstance = new Chart(document.getElementById("myChart").getContext("2d"), {
-      type: "line",
-      data: {
-        labels,
-        datasets: [
-          { ...makeDataset("Regular", "value",     "#60a5fa"), yAxisID: "yReg"  },
-          { ...makeDataset("Neon",    "neonValue",  "#a78bfa"), yAxisID: "yNeon" },
-          { ...makeDataset("Mega",    "megaValue",  "#f59e0b"), yAxisID: "yMega" },
-        ],
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderWidth: 1,
-            titleColor: "#9ca3af", bodyColor: "#e5e7eb", padding: 12,
-            callbacks: {
-              label: ctx => ctx.dataset.hidden ? null : ` ${ctx.dataset.label}: ${formatVal(ctx.raw)}`,
-            },
-          },
-        },
-        scales: {
-          x: {
-            ticks: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, maxTicksLimit: 8 },
-            grid: { color: "rgba(255,255,255,0.04)" }
-          },
-          yReg: {
-            type: "linear", display: "auto", position: "left",
-            ticks: { color: "#60a5fa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
-            grid: { color: "rgba(255,255,255,0.04)" },
-          },
-          yNeon: {
-            type: "linear", display: "auto", position: "left",
-            ticks: { color: "#a78bfa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
-            grid: { drawOnChartArea: false },
-          },
-          yMega: {
-            type: "linear", display: "auto", position: "right",
-            ticks: { color: "#f59e0b", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
-            grid: { drawOnChartArea: false },
-          },
-        },
-      },
-    });
-  } catch(e) {
-    area.innerHTML = `<div class="chart-empty"><p>Failed to load history: ${e.message}</p></div>`;
+  if (h.length < 2) {
+    area.innerHTML = `
+      <div class="chart-empty">
+        <div class="chart-empty-icon">📊</div>
+        <p>Not enough data yet for this range</p>
+        <p style="font-size:11px;font-family:monospace;color:#374151">Hit ↻ Refresh regularly to build up history</p>
+      </div>`;
+    return;
   }
+
+  const labels = h.map(x => formatDate(x.t, range));
+  area.innerHTML = `<div class="chart-wrap"><canvas id="myChart"></canvas></div>`;
+  if (chartInstance) chartInstance.destroy();
+
+  chartInstance = new Chart(document.getElementById("myChart").getContext("2d"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Regular",
+        data: h.map(x => x.v),
+        borderColor: "#60a5fa",
+        backgroundColor: "#60a5fa18",
+        borderWidth: 2,
+        pointRadius: h.length > 50 ? 0 : 3,
+        pointHoverRadius: 5,
+        tension: 0.3,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "#111827", borderColor: "rgba(255,255,255,0.1)", borderWidth: 1,
+          titleColor: "#9ca3af", bodyColor: "#e5e7eb", padding: 12,
+          callbacks: { label: ctx => ` Value: ${formatVal(ctx.raw)}` },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#6b7280", font: { family: "DM Mono", size: 10 }, maxTicksLimit: 8 },
+          grid: { color: "rgba(255,255,255,0.04)" }
+        },
+        y: {
+          ticks: { color: "#60a5fa", font: { family: "DM Mono", size: 10 }, callback: v => formatVal(v) },
+          grid: { color: "rgba(255,255,255,0.04)" },
+        },
+      },
+    },
+  });
 }
 
 async function loadPets(force = false) {
@@ -520,36 +555,58 @@ async function loadPets(force = false) {
   statusEl.style.display = "flex"; grid.style.display = "none";
   btn.disabled = true; btn.textContent = "Loading…";
   statusEl.innerHTML = `<div class="spinner"></div><p>Scraping Elvebredd… (~20 seconds)</p><p style="font-size:12px;font-family:monospace;color:#4b5563">Make sure server.js is running on port 3001</p>`;
+
   try {
     const res = await fetch(`${API}/api/pets/all${force ? "?refresh=true" : ""}`);
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
     if (!data.ok) throw new Error(data.error);
-    markAllSeen(data.pets); // mark before checking so timestamps are set
-    newPetNames = new Set(data.pets.filter(p => isNewPet(p.name)).map(p => p.name));
-    allPets = data.pets;
-    statusEl.style.display = "none"; grid.style.display = "grid";
+
+    // Only show actual pets
+    const pets = data.pets.filter(p => p.type === "pets");
+
+    markAllSeen(pets);
+    newPetNames = new Set(pets.filter(p => isNewPet(p.name)).map(p => p.name));
+    allPets = pets;
+
+    // Log history
+    for (const p of allPets) logValue(p.name, p.value);
+    saveLocalHistory();
+
+    detectMovers();
+
+    statusEl.style.display = "none";
+    grid.style.display = "grid";
     render();
-    // Load rising pets in background
-    detectRisingPets();
+
   } catch(err) {
-    statusEl.innerHTML = `<div class="error-box">⚠ ${err.message}</div><button class="retry-btn" onclick="loadPets()">Try Again</button>`;
+    statusEl.innerHTML = `
+      <div class="error-box">⚠ ${err.message}<br><br>
+      Make sure <strong>node server.js</strong> is running in your VS Code terminal</div>
+      <button class="retry-btn" onclick="loadPets()">Try Again</button>`;
   } finally {
-    btn.disabled = false; btn.textContent = "↻ Refresh";
+    btn.disabled = false;
+    btn.textContent = "↻ Refresh";
   }
 }
 
 // Events
 document.getElementById("search").addEventListener("input", e => { searchQuery = e.target.value.toLowerCase(); render(); });
+
 document.getElementById("filters").addEventListener("click", e => {
   const btn = e.target.closest(".filter-btn");
   if (!btn) return;
   document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active"); activeRarity = btn.dataset.rarity; render();
+  btn.classList.add("active");
+  activeRarity = btn.dataset.rarity;
+  render();
 });
+
 document.getElementById("refreshBtn").addEventListener("click", () => loadPets(true));
 document.getElementById("closeModal").addEventListener("click", closeModal);
-document.getElementById("modal-overlay").addEventListener("click", e => { if (e.target === document.getElementById("modal-overlay")) closeModal(); });
+document.getElementById("modal-overlay").addEventListener("click", e => {
+  if (e.target === document.getElementById("modal-overlay")) closeModal();
+});
 
 document.getElementById("variantTabs").addEventListener("click", e => {
   const tab = e.target.closest(".variant-tab");
@@ -566,7 +623,7 @@ document.getElementById("rangeTabs").addEventListener("click", e => {
   document.querySelectorAll(".range-tab").forEach(t => t.classList.remove("active"));
   tab.classList.add("active");
   currentRange = tab.dataset.range;
-  loadChart(currentPet, currentRange);
+  renderLocalChart(currentPet, currentRange);
 });
 
 document.getElementById("grid").addEventListener("click", e => {
@@ -583,13 +640,8 @@ document.getElementById("seriesToggle").addEventListener("click", e => {
   if (!btn || !chartInstance) return;
   const idx = parseInt(btn.dataset.series);
   const meta = chartInstance.getDatasetMeta(idx);
-  const isHidden = meta.hidden;
-  // Toggle
-  meta.hidden = !isHidden;
-  btn.classList.toggle("active", isHidden);
-  // Show/hide the corresponding Y axis
-  const axisIds = ["yReg", "yNeon", "yMega"];
-  chartInstance.options.scales[axisIds[idx]].display = isHidden ? "auto" : false;
+  meta.hidden = !meta.hidden;
+  btn.classList.toggle("active", !meta.hidden);
   chartInstance.update();
 });
 
