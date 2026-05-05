@@ -4,8 +4,7 @@ const puppeteer = require("puppeteer-extra");
 const chromium = require("@sparticuz/chromium");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
+const { createClient } = require("@libsql/client");
 
 puppeteer.use(StealthPlugin());
 
@@ -15,42 +14,93 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ── History ───────────────────────────────────────────────────────────────────
-const HISTORY_PATH = path.join(__dirname, "history.json");
+// ── Turso Database ────────────────────────────────────────────────────────────
+const db = createClient({
+  url: process.env.TURSO_URL,
+  authToken: process.env.TURSO_TOKEN,
+});
 
-function loadHistory() {
-  try {
-    if (fs.existsSync(HISTORY_PATH)) return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf8"));
-  } catch(e) { console.log("[history] load error:", e.message); }
-  return {};
+async function initDb() {
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS snapshots (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      pet_name    TEXT    NOT NULL,
+      value       REAL,
+      neon_value  REAL,
+      mega_value  REAL,
+      captured_at INTEGER NOT NULL
+    )
+  `);
+  await db.execute(`
+    CREATE INDEX IF NOT EXISTS idx_pet_time ON snapshots(pet_name, captured_at)
+  `);
+  console.log("[db] Turso database ready");
 }
 
-function saveHistory(history) {
-  try { fs.writeFileSync(HISTORY_PATH, JSON.stringify(history)); }
-  catch(e) { console.log("[history] save error:", e.message); }
-}
-
-function addSnapshot(pets) {
-  const history = loadHistory();
+async function addSnapshot(pets) {
   const now = Date.now();
-  for (const p of pets) {
-    if (!history[p.name]) history[p.name] = [];
-    history[p.name].push({ ts: now, value: p.value, neonValue: p.neonValue, megaValue: p.megaValue });
-    if (history[p.name].length > 1500) history[p.name] = history[p.name].slice(-1500);
-  }
-  saveHistory(history);
-  console.log(`[history] saved snapshots for ${pets.length} pets`);
+  const batch = pets.map(p => ({
+    sql: `INSERT INTO snapshots (pet_name, value, neon_value, mega_value, captured_at) VALUES (?, ?, ?, ?, ?)`,
+    args: [p.name, p.value, p.neonValue, p.megaValue, now],
+  }));
+  await db.batch(batch);
+
+  // Keep max 1500 snapshots per pet - clean up old ones
+  await db.execute(`
+    DELETE FROM snapshots WHERE id IN (
+      SELECT id FROM snapshots
+      WHERE pet_name IN (
+        SELECT pet_name FROM snapshots
+        GROUP BY pet_name HAVING COUNT(*) > 1500
+      )
+      ORDER BY captured_at ASC
+      LIMIT 500
+    )
+  `);
+  console.log(`[db] saved ${pets.length} snapshots`);
 }
 
-function getHistory(petName, range) {
-  const history = loadHistory();
-  const key = Object.keys(history).find(k => k.toLowerCase() === petName.toLowerCase());
-  if (!key) return [];
+async function getHistory(petName, range) {
   const now = Date.now();
-  const since = { day: now - 86400000, week: now - 604800000, month: now - 2592000000, year: now - 31536000000 }[range] ?? now - 2592000000;
-  const all = history[key];
-  const filtered = all.filter(s => s.ts >= since);
-  return filtered.length >= 2 ? filtered : all;
+  const since = {
+    day:   now - 86400000,
+    week:  now - 604800000,
+    month: now - 2592000000,
+    year:  now - 31536000000,
+  }[range] ?? now - 604800000;
+
+  const result = await db.execute({
+    sql: `SELECT value, neon_value, mega_value, captured_at as ts
+          FROM snapshots
+          WHERE LOWER(pet_name) = LOWER(?) AND captured_at >= ?
+          ORDER BY captured_at ASC`,
+    args: [petName, since],
+  });
+
+  const rows = result.rows.map(r => ({
+    ts: Number(r.ts),
+    value: r.value,
+    neonValue: r.neon_value,
+    megaValue: r.mega_value,
+  }));
+
+  if (rows.length >= 2) return rows;
+
+  // Fall back to all available data
+  const all = await db.execute({
+    sql: `SELECT value, neon_value, mega_value, captured_at as ts
+          FROM snapshots
+          WHERE LOWER(pet_name) = LOWER(?)
+          ORDER BY captured_at ASC`,
+    args: [petName],
+  });
+
+  return all.rows.map(r => ({
+    ts: Number(r.ts),
+    value: r.value,
+    neonValue: r.neon_value,
+    megaValue: r.mega_value,
+  }));
 }
 
 // ── Auto-snapshot every 30 minutes ───────────────────────────────────────────
@@ -59,7 +109,7 @@ const SNAPSHOT_INTERVAL = 30 * 60 * 1000;
 async function autoSnapshot() {
   if (petCache.length === 0) return;
   console.log("[auto-snapshot] saving snapshot...");
-  addSnapshot(petCache);
+  await addSnapshot(petCache);
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -142,7 +192,6 @@ async function scrapeAllPets(force = false) {
       waitUntil: "domcontentloaded",
       timeout: 60000,
     });
-    // Wait for Next.js to stream pet data into the page
     await new Promise(r => setTimeout(r, 8000));
 
     if (!petData || petData.length === 0) throw new Error("Could not extract pet data from page.");
@@ -151,12 +200,11 @@ async function scrapeAllPets(force = false) {
       .filter(p => p.name && p.type === "pets")
       .map(p => ({
         name: p.name,
-        value:      p.rvalue ?? null,
-        neonValue:  p.nvalue ?? null,
-        megaValue:  p.mvalue ?? null,
-        rarity:     p.rarity ?? null,
-        image:      p.image ? `https://elvebredd.com${p.image}` : null,
-        // Variants
+        value:        p.rvalue ?? null,
+        neonValue:    p.nvalue ?? null,
+        megaValue:    p.mvalue ?? null,
+        rarity:       p.rarity ?? null,
+        image:        p.image ? `https://elvebredd.com${p.image}` : null,
         valueFlyRide: p["rvalue - fly&ride"] ?? null,
         valueFly:     p["rvalue - fly"]      ?? null,
         valueRide:    p["rvalue - ride"]     ?? null,
@@ -173,8 +221,8 @@ async function scrapeAllPets(force = false) {
 
     petCache = mapped;
     lastFetch = Date.now();
-    addSnapshot(mapped);
-    console.log(`[done] ${mapped.length} pets cached & saved to history`);
+    await addSnapshot(mapped);
+    console.log(`[done] ${mapped.length} pets cached & saved to Turso`);
     return mapped;
   } finally {
     await browser.close();
@@ -207,12 +255,16 @@ app.get("/api/pet/:name", async (req, res) => {
   }
 });
 
-app.get("/api/pet/:name/history", (req, res) => {
-  const petName = decodeURIComponent(req.params.name);
-  const range = req.query.range ?? "day";
-  const history = getHistory(petName, range);
-  const note = history.length < 2 ? "Not enough data yet — keep refreshing to build up history" : null;
-  res.json({ ok: true, pet: petName, range, history, note });
+app.get("/api/pet/:name/history", async (req, res) => {
+  try {
+    const petName = decodeURIComponent(req.params.name);
+    const range = req.query.range ?? "day";
+    const history = await getHistory(petName, range);
+    const note = history.length < 2 ? "Not enough data yet — keep refreshing to build up history" : null;
+    res.json({ ok: true, pet: petName, range, history, note });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post("/api/pets", async (req, res) => {
@@ -239,16 +291,15 @@ app.get("/api/cache/clear", (req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n✅  Adopt Me proxy running → http://localhost:${PORT}`);
-  console.log(`   http://localhost:${PORT}/api/pets/all`);
-  console.log(`   http://localhost:${PORT}/api/pet/Bat%20Dragon\n`);
-  if (fs.existsSync(HISTORY_PATH)) {
-    const h = loadHistory();
-    console.log(`[history] loaded existing history for ${Object.keys(h).length} pets`);
-  } else {
-    console.log("[history] no history file yet — will be created on first scrape");
-  }
-  setInterval(autoSnapshot, SNAPSHOT_INTERVAL);
-  console.log("[auto-snapshot] will save every 30 minutes");
+initDb().then(() => {
+  app.listen(PORT, () => {
+    console.log(`\n✅  Adopt Me proxy running → http://localhost:${PORT}`);
+    console.log(`   http://localhost:${PORT}/api/pets/all`);
+    console.log(`   http://localhost:${PORT}/api/pet/Bat%20Dragon\n`);
+    setInterval(autoSnapshot, SNAPSHOT_INTERVAL);
+    console.log("[auto-snapshot] will save every 30 minutes");
+  });
+}).catch(err => {
+  console.error("[db] Failed to connect to Turso:", err.message);
+  process.exit(1);
 });
