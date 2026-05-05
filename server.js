@@ -47,7 +47,7 @@ function getHistory(petName, range) {
   const key = Object.keys(history).find(k => k.toLowerCase() === petName.toLowerCase());
   if (!key) return [];
   const now = Date.now();
-  const since = { day: now - 86400000, month: now - 2592000000, year: now - 31536000000 }[range] ?? now - 2592000000;
+  const since = { day: now - 86400000, week: now - 604800000, month: now - 2592000000, year: now - 31536000000 }[range] ?? now - 2592000000;
   const all = history[key];
   const filtered = all.filter(s => s.ts >= since);
   return filtered.length >= 2 ? filtered : all;
