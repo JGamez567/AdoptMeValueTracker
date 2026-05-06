@@ -330,53 +330,53 @@ async function detectRisingPets() {
   risingPets = new Set();
   fallingPets = new Set();
 
-  const priority = allPets.filter(p => ["legendary","ultra rare"].includes((p.rarity??"").toLowerCase()));
-  const rest = allPets.filter(p => !["legendary","ultra rare"].includes((p.rarity??"").toLowerCase()));
-  const toCheck = [...priority, ...rest].slice(0, 80);
+  // Prioritize high value pets (>5) first, then everything else
+  const highValue = allPets.filter(p => (p.value ?? 0) > 5);
+  const lowValue  = allPets.filter(p => (p.value ?? 0) <= 5);
+  const toCheck   = [...highValue, ...lowValue];
 
-  await Promise.all(toCheck.map(async pet => {
-    try {
-      // Use week range so we have enough data to detect 3-day trends
-      const res = await fetch(`${API}/api/pet/${encodeURIComponent(pet.name)}/history?range=week`);
-      const data = await res.json();
-      const h = data.history ?? [];
-      if (h.length < 2) return;
+  const batchSize = 15;
+  for (let i = 0; i < toCheck.length; i += batchSize) {
+    const batch = toCheck.slice(i, i + batchSize);
+    await Promise.all(batch.map(async pet => {
+      try {
+        const res = await fetch(`${API}/api/pet/${encodeURIComponent(pet.name)}/history?range=week`);
+        const data = await res.json();
+        const h = data.history ?? [];
+        if (h.length < 2) return;
 
-      const now = Date.now();
-      const DAY = 86400000;
+        const now = Date.now();
+        const DAY = 86400000;
 
-      // Rising: went up 1+ value over the past week
-      const weekFirst = h[0].value;
-      const weekLast = h[h.length - 1].value;
-      if (weekFirst != null && weekLast != null && (weekLast - weekFirst) >= 1) {
-        risingPets.add(pet.name);
-      }
+        // Rising: went up 1+ value over the past week
+        const weekFirst = h[0].value;
+        const weekLast = h[h.length - 1].value;
+        if (weekFirst != null && weekLast != null && (weekLast - weekFirst) >= 1) {
+          risingPets.add(pet.name);
+        }
 
-      // Falling: check if value has been going DOWN for 3+ days
-      // Get snapshots from 3 days ago and compare to now
-      const threeDaysAgo = now - (3 * DAY);
-      const oldSnaps = h.filter(s => s.ts <= threeDaysAgo);
-      const recentSnaps = h.filter(s => s.ts > threeDaysAgo);
+        // Falling: went down 1+ over 3 days
+        const threeDaysAgo = now - (3 * DAY);
+        const oldSnaps = h.filter(s => s.ts <= threeDaysAgo);
+        const recentSnaps = h.filter(s => s.ts > threeDaysAgo);
 
-      if (oldSnaps.length > 0 && recentSnaps.length > 0) {
-        const oldVal = oldSnaps[oldSnaps.length - 1].value;
-        const newVal = recentSnaps[recentSnaps.length - 1].value;
-        if (oldVal != null && newVal != null && (newVal - oldVal) <= -1) {
+        if (oldSnaps.length > 0 && recentSnaps.length > 0) {
+          const oldVal = oldSnaps[oldSnaps.length - 1].value;
+          const newVal = recentSnaps[recentSnaps.length - 1].value;
+          if (oldVal != null && newVal != null && (newVal - oldVal) <= -1) {
+            fallingPets.add(pet.name);
+          }
+        } else if (weekFirst != null && weekLast != null && (weekLast - weekFirst) <= -1) {
           fallingPets.add(pet.name);
         }
-      } else {
-        // Not enough data for 3-day check, fall back to simple drop
-        if (weekFirst != null && weekLast != null && (weekLast - weekFirst) <= -1) {
-          fallingPets.add(pet.name);
-        }
-      }
-
-    } catch(_) {}
-  }));
+      } catch(_) {}
+    }));
+  }
 
   console.log(`[rising] ${risingPets.size} rising, ${fallingPets.size} falling`);
   if (activeRarity === "rising" || activeRarity === "falling") render();
 }
+
 
 function renderCard(pet) {
   const color = rarityColor(pet.rarity);
