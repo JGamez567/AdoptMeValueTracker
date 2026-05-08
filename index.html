@@ -262,7 +262,7 @@
 </div>
 
 <script>
-const API = "https://adoptmevaluetracker.onrender.com";
+const API = "http://localhost:3001";
 const SEEN_KEY = "adoptme_seen_pets";
 
 const rarityColor = r => ({
@@ -327,54 +327,16 @@ let risingPets = new Set();
 let fallingPets = new Set();
 
 async function detectRisingPets() {
-  risingPets = new Set();
-  fallingPets = new Set();
-
-  // Prioritize high value pets (>5) first, then everything else
-  const highValue = allPets.filter(p => (p.value ?? 0) > 5);
-  const lowValue  = allPets.filter(p => (p.value ?? 0) <= 5);
-  const toCheck   = [...highValue, ...lowValue];
-
-  const batchSize = 15;
-  for (let i = 0; i < toCheck.length; i += batchSize) {
-    const batch = toCheck.slice(i, i + batchSize);
-    await Promise.all(batch.map(async pet => {
-      try {
-        const res = await fetch(`${API}/api/pet/${encodeURIComponent(pet.name)}/history?range=week`);
-        const data = await res.json();
-        const h = data.history ?? [];
-        if (h.length < 2) return;
-
-        const now = Date.now();
-        const DAY = 86400000;
-
-        // Rising: went up 1+ value over the past week
-        const weekFirst = h[0].value;
-        const weekLast = h[h.length - 1].value;
-        if (weekFirst != null && weekLast != null && (weekLast - weekFirst) >= 1) {
-          risingPets.add(pet.name);
-        }
-
-        // Falling: went down 1+ over 3 days
-        const threeDaysAgo = now - (3 * DAY);
-        const oldSnaps = h.filter(s => s.ts <= threeDaysAgo);
-        const recentSnaps = h.filter(s => s.ts > threeDaysAgo);
-
-        if (oldSnaps.length > 0 && recentSnaps.length > 0) {
-          const oldVal = oldSnaps[oldSnaps.length - 1].value;
-          const newVal = recentSnaps[recentSnaps.length - 1].value;
-          if (oldVal != null && newVal != null && (newVal - oldVal) <= -1) {
-            fallingPets.add(pet.name);
-          }
-        } else if (weekFirst != null && weekLast != null && (weekLast - weekFirst) <= -1) {
-          fallingPets.add(pet.name);
-        }
-      } catch(_) {}
-    }));
+  try {
+    const res = await fetch(`${API}/api/pets/trending`);
+    const data = await res.json();
+    risingPets  = new Set(data.rising  ?? []);
+    fallingPets = new Set(data.falling ?? []);
+    console.log(`[trending] ${risingPets.size} rising, ${fallingPets.size} falling`);
+    if (activeRarity === "rising" || activeRarity === "falling") render();
+  } catch(e) {
+    console.log("[trending] failed:", e.message);
   }
-
-  console.log(`[rising] ${risingPets.size} rising, ${fallingPets.size} falling`);
-  if (activeRarity === "rising" || activeRarity === "falling") render();
 }
 
 
