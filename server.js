@@ -1,10 +1,15 @@
+// ── Adopt Me scraper → Supabase ───────────────────────────────────────────────
+// Scrapes Elvebredd every 6 hours and writes CHANGED pet values to Supabase.
+// No Turso, no HTTP-triggered snapshots — a clean scheduled data feeder.
+
 process.env.PUPPETEER_CACHE_DIR = "/opt/render/.cache/puppeteer";
+
 const express = require("express");
 const puppeteer = require("puppeteer-extra");
 const chromium = require("@sparticuz/chromium");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const cors = require("cors");
-const { createClient } = require("@libsql/client");
+const { createClient } = require("@supabase/supabase-js");
 
 puppeteer.use(StealthPlugin());
 
@@ -14,41 +19,13 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// ── Turso Database ────────────────────────────────────────────────────────────
-const db = createClient({
-  url: process.env.TURSO_URL,
-  authToken: process.env.TURSO_TOKEN,
-});
-const { createClient: createSupabase } = require("@supabase/supabase-js");
-const supabase = createSupabase(
+// ── Supabase ───────────────────────────────────────────────────────────────────
+const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SECRET_KEY
 );
-async function initDb() {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS snapshots (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      pet_name    TEXT    NOT NULL,
-      value       REAL,
-      neon_value  REAL,
-      mega_value  REAL,
-      captured_at INTEGER NOT NULL
-    )
-  `);
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_pet_time ON snapshots(pet_name, captured_at)`);
-  console.log("[db] Turso database ready");
-}
 
-async function cleanOldData() {
-  // Delete anything older than 30 days
-  const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
-  const result = await db.execute({
-    sql: `DELETE FROM snapshots WHERE captured_at < ?`,
-    args: [cutoff],
-  });
-  console.log(`[db] cleaned old data, removed ${result.rowsAffected} rows`);
-}
-// Map one Elvebredd pet into its (tier × potion) variants
+// ── Map one Elvebredd pet into its (tier × potion) variants ─────────────────────
 function buildVariants(p) {
   const tiers = [
     { neon: "normal", base: p.valueNoPot ?? p.value,    fly: p.valueFly, ride: p.valueRide, flyride: p.valueFlyRide },
@@ -65,6 +42,7 @@ function buildVariants(p) {
   return out;
 }
 
+// ── Write changed values to Supabase (change-detection) ─────────────────────────
 async function writeToSupabase(pets) {
   // 1) upsert the catalog (fixed set — upsert updates, never duplicates)
   const petRows = pets.map(p => ({ name: p.name, rarity: p.rarity, icon_url: p.image }));
@@ -73,7 +51,7 @@ async function writeToSupabase(pets) {
   if (petErr) throw petErr;
   const petId = new Map(petData.map(r => [r.name, r.id]));
 
-  // 2) upsert the variants (also a fixed set)
+  // 2) upsert the variants
   const variantRows = [];
   for (const p of pets) {
     const id = petId.get(p.name);
@@ -86,7 +64,7 @@ async function writeToSupabase(pets) {
   if (varErr) throw varErr;
   const variantId = new Map(varData.map(r => [`${r.pet_id}|${r.neon}|${r.fly}|${r.ride}`, r.id]));
 
-  // 3) look up the latest stored value per variant (change-detection)
+  // 3) latest stored value per variant (for change-detection)
   const { data: currentVals, error: curErr } = await supabase
     .from("current_pet_values").select("pet_variant_id, value");
   if (curErr) throw curErr;
@@ -116,168 +94,12 @@ async function writeToSupabase(pets) {
   console.log(`[supabase] stored ${valueRows.length} changed values`);
 }
 
-async function addSnapshot(pets) {
-  // mirror into Supabase (runs its own change-detection; never breaks Turso)
-  try {
-    await writeToSupabase(pets);
-  } catch (e) {
-    console.log("[supabase] write skipped:", e.message);
-  }
-  const now = Date.now();
-
-  // Get the latest stored value for every pet (one query)
-  const latest = await db.execute(`
-    SELECT pet_name, value, neon_value, mega_value
-    FROM snapshots s
-    WHERE captured_at = (
-      SELECT MAX(captured_at) FROM snapshots WHERE pet_name = s.pet_name
-    )
-  `);
-  const lastMap = new Map(
-    latest.rows.map(r => [r.pet_name, {
-      value: r.value, neon_value: r.neon_value, mega_value: r.mega_value,
-    }])
-  );
-
-  // Keep only pets whose value actually changed (or are brand new)
-  const changed = pets.filter(p => {
-    const prev = lastMap.get(p.name);
-    if (!prev) return true; // never seen before → store it
-    return prev.value !== p.value
-        || prev.neon_value !== p.neonValue
-        || prev.mega_value !== p.megaValue;
-  });
-
-  if (!changed.length) {
-    console.log("[db] no value changes — nothing to store");
-    return;
-  }
-
-  const chunkSize = 100;
-  for (let i = 0; i < changed.length; i += chunkSize) {
-    const chunk = changed.slice(i, i + chunkSize);
-    const batch = chunk.map(p => ({
-      sql: `INSERT INTO snapshots (pet_name, value, neon_value, mega_value, captured_at) VALUES (?, ?, ?, ?, ?)`,
-      args: [p.name, p.value, p.neonValue, p.megaValue, now],
-    }));
-    await db.batch(batch);
-  }
-  console.log(`[db] saved ${changed.length} changed snapshots (skipped ${pets.length - changed.length} unchanged)`);
-}
-
-// ── Trending Cache ─────────────────────────────────────────────────────────────
-// Calculated server-side every 30 min — zero extra DB reads from frontend
-let trendingCache = { rising: [], falling: [], calculatedAt: null };
-
-async function calculateTrending(pets) {
-  if (!pets.length) return;
-  console.log("[trending] calculating rising/falling...");
-
-  const now = Date.now();
-  const DAY = 86400000;
-  const oneDayAgo = now - DAY;
-  const threeDaysAgo = now - (3 * DAY);
-  const sevenDaysAgo = now - (7 * DAY);
-
-  // Single query to get first and last snapshot per pet in the last 7 days
-  // This is just 2 reads total regardless of pet count
-  const [firstRows, lastRows] = await Promise.all([
-    db.execute({
-      sql: `SELECT pet_name, value, captured_at FROM snapshots
-            WHERE captured_at >= ? AND captured_at <= ?
-            GROUP BY pet_name
-            HAVING captured_at = MIN(captured_at)`,
-      args: [sevenDaysAgo, now],
-    }),
-    db.execute({
-      sql: `SELECT pet_name, value, captured_at FROM snapshots
-            WHERE captured_at >= ?
-            GROUP BY pet_name
-            HAVING captured_at = MAX(captured_at)`,
-      args: [oneDayAgo],
-    }),
-  ]);
-
-  // Also get value from 3 days ago for falling detection
-  const threeDay = await db.execute({
-    sql: `SELECT pet_name, value, captured_at FROM snapshots
-          WHERE captured_at >= ? AND captured_at <= ?
-          GROUP BY pet_name
-          HAVING captured_at = MIN(captured_at)`,
-    args: [threeDaysAgo, threeDaysAgo + (2 * 60 * 60 * 1000)], // within 2hr window of 3 days ago
-  });
-
-  const firstMap = new Map(firstRows.rows.map(r => [r.pet_name, Number(r.value)]));
-  const lastMap  = new Map(lastRows.rows.map(r => [r.pet_name, Number(r.value)]));
-  const threeDayMap = new Map(threeDay.rows.map(r => [r.pet_name, Number(r.value)]));
-
-  const rising = [];
-  const falling = [];
-
-  for (const pet of pets) {
-    const first = firstMap.get(pet.name);
-    const last  = lastMap.get(pet.name);
-    const threeAgo = threeDayMap.get(pet.name);
-
-    if (first == null || last == null) continue;
-
-    // Rising: up 1+ over the past week
-    if ((last - first) >= 1) rising.push(pet.name);
-
-    // Falling: down 1+ over 3 days (or week if no 3-day data)
-    const compareVal = threeAgo ?? first;
-    if ((last - compareVal) <= -1) falling.push(pet.name);
-  }
-
-  trendingCache = { rising, falling, calculatedAt: now };
-  console.log(`[trending] ${rising.length} rising, ${falling.length} falling`);
-}
-
-// ── History (only called when user clicks a pet) ──────────────────────────────
-async function getHistory(petName, range) {
-  const now = Date.now();
-  const since = {
-    day:   now - 86400000,
-    week:  now - 604800000,
-    month: now - 2592000000,
-  }[range] ?? now - 86400000;
-
-  const result = await db.execute({
-    sql: `SELECT value, neon_value, mega_value, captured_at as ts
-          FROM snapshots
-          WHERE LOWER(pet_name) = LOWER(?) AND captured_at >= ?
-          ORDER BY captured_at ASC`,
-    args: [petName, since],
-  });
-
-  const rows = result.rows.map(r => ({
-    ts: Number(r.ts),
-    value: r.value,
-    neonValue: r.neon_value,
-    megaValue: r.mega_value,
-  }));
-
-  if (rows.length >= 2) return rows;
-
-  // Fall back to all available
-  const all = await db.execute({
-    sql: `SELECT value, neon_value, mega_value, captured_at as ts
-          FROM snapshots WHERE LOWER(pet_name) = LOWER(?)
-          ORDER BY captured_at ASC`,
-    args: [petName],
-  });
-  return all.rows.map(r => ({
-    ts: Number(r.ts), value: r.value,
-    neonValue: r.neon_value, megaValue: r.mega_value,
-  }));
-}
-
-// ── Cache ─────────────────────────────────────────────────────────────────────
+// ── Cache (only serves the optional debug endpoints below) ──────────────────────
 let petCache = [];
 let lastFetch = 0;
 const CACHE_TTL = 5 * 60 * 1000;
 
-// ── Scraper ───────────────────────────────────────────────────────────────────
+// ── Scraper ──────────────────────────────────────────────────────────────────────
 async function scrapeAllPets(force = false) {
   if (!force && lastFetch && Date.now() - lastFetch < CACHE_TTL) {
     console.log(`[cache] returning ${petCache.length} pets`);
@@ -333,7 +155,7 @@ async function scrapeAllPets(force = false) {
         console.log(`[scrape] extracted ${petData.length} pets`);
         break;
       }
-    } catch(e) {
+    } catch (e) {
       if (!e.message.includes("No data") && !e.message.includes("body") && !e.message.includes("Target closed"))
         console.log("[warn]", e.message);
     }
@@ -370,100 +192,50 @@ async function scrapeAllPets(force = false) {
 
     petCache = mapped;
     lastFetch = Date.now();
-    console.log(`[done] ${mapped.length} pets cached & saved`);
+    console.log(`[done] ${mapped.length} pets scraped`);
     return mapped;
   } finally {
     await browser.close();
   }
 }
 
-// ── Auto tasks every 30 min ───────────────────────────────────────────────────
-const INTERVAL = 6 * 60 * 60 * 1000;
+// ── Scheduled scrape → Supabase (runs on its own, no HTTP traffic needed) ───────
+const SCRAPE_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
 
-async function autoTasks() {
-  if (!petCache.length) return;
-  console.log("[auto] running scheduled tasks...");
-  await addSnapshot(petCache);
-  await calculateTrending(petCache);
-  await cleanOldData();
+async function scheduledScrape() {
+  try {
+    console.log("[auto] scheduled scrape starting...");
+    const pets = await scrapeAllPets(true);   // force a fresh scrape
+    await writeToSupabase(pets);
+    console.log("[auto] scheduled scrape complete");
+  } catch (e) {
+    console.log("[auto] scrape failed:", e.message);
+  }
 }
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ── Routes (optional — the new app reads Supabase directly) ─────────────────────
 app.get("/health", (req, res) => res.json({ ok: true, cachedPets: petCache.length }));
 
+// Current cached values — handy for debugging
 app.get("/api/pets/all", async (req, res) => {
   try {
     const pets = await scrapeAllPets(req.query.refresh === "true");
-    // Calculate trending after first scrape
-    if (trendingCache.calculatedAt === null) calculateTrending(pets).catch(console.error);
     res.json({ ok: true, count: pets.length, pets });
   } catch (err) {
-    console.error("[error]", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Returns cached trending — no DB reads
-app.get("/api/pets/trending", (req, res) => {
-  res.json({ ok: true, ...trendingCache });
+// Manually trigger a scrape + Supabase write (great for testing right now)
+app.get("/api/scrape", (req, res) => {
+  scheduledScrape().catch(console.error);
+  res.json({ ok: true, message: "Scrape triggered — check the logs and Supabase." });
 });
 
-app.get("/api/pet/:name", async (req, res) => {
-  try {
-    const all = await scrapeAllPets();
-    const key = req.params.name.toLowerCase();
-    const pet = all.find(p => p.name.toLowerCase() === key)
-              || all.find(p => p.name.toLowerCase().includes(key));
-    if (!pet) return res.status(404).json({ ok: false, error: `"${req.params.name}" not found.` });
-    res.json({ ok: true, ...pet });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.get("/api/pet/:name/history", async (req, res) => {
-  try {
-    const petName = decodeURIComponent(req.params.name);
-    const range = req.query.range ?? "day";
-    const history = await getHistory(petName, range);
-    const note = history.length < 2 ? "Not enough data yet — keep refreshing to build up history" : null;
-    res.json({ ok: true, pet: petName, range, history, note });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.post("/api/pets", async (req, res) => {
-  const names = req.body.names || [];
-  if (!names.length) return res.status(400).json({ ok: false, error: "Provide { names: [...] }" });
-  try {
-    const all = await scrapeAllPets();
-    const results = {};
-    for (const name of names) {
-      const key = name.toLowerCase();
-      results[name] = all.find(p => p.name.toLowerCase() === key)
-                   || all.find(p => p.name.toLowerCase().includes(key))
-                   || { error: "Not found" };
-    }
-    res.json({ ok: true, results });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.get("/api/cache/clear", (req, res) => {
-  petCache = []; lastFetch = 0;
-  res.json({ ok: true, message: "Cache cleared" });
-});
-
-// ── Start ─────────────────────────────────────────────────────────────────────
-initDb().then(() => {
-  app.listen(PORT, () => {
-    console.log(`\n✅  Adopt Me proxy running → http://localhost:${PORT}\n`);
-    setInterval(autoTasks, INTERVAL);
-    console.log("[auto] tasks scheduled every 30 minutes");
-  });
-}).catch(err => {
-  console.error("[db] Failed to connect to Turso:", err.message);
-  process.exit(1);
+// ── Start ──────────────────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`\n✅  Adopt Me scraper running → port ${PORT}\n`);
+  scheduledScrape();                              // run once right at startup
+  setInterval(scheduledScrape, SCRAPE_INTERVAL);  // then every 6 hours
+  console.log("[auto] scraping every 6 hours");
 });
