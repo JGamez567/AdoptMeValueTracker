@@ -47,17 +47,45 @@ async function cleanOldData() {
 
 async function addSnapshot(pets) {
   const now = Date.now();
-  // Batch insert in chunks of 100 to avoid large transactions
+
+  // Get the latest stored value for every pet (one query)
+  const latest = await db.execute(`
+    SELECT pet_name, value, neon_value, mega_value
+    FROM snapshots s
+    WHERE captured_at = (
+      SELECT MAX(captured_at) FROM snapshots WHERE pet_name = s.pet_name
+    )
+  `);
+  const lastMap = new Map(
+    latest.rows.map(r => [r.pet_name, {
+      value: r.value, neon_value: r.neon_value, mega_value: r.mega_value,
+    }])
+  );
+
+  // Keep only pets whose value actually changed (or are brand new)
+  const changed = pets.filter(p => {
+    const prev = lastMap.get(p.name);
+    if (!prev) return true; // never seen before → store it
+    return prev.value !== p.value
+        || prev.neon_value !== p.neonValue
+        || prev.mega_value !== p.megaValue;
+  });
+
+  if (!changed.length) {
+    console.log("[db] no value changes — nothing to store");
+    return;
+  }
+
   const chunkSize = 100;
-  for (let i = 0; i < pets.length; i += chunkSize) {
-    const chunk = pets.slice(i, i + chunkSize);
+  for (let i = 0; i < changed.length; i += chunkSize) {
+    const chunk = changed.slice(i, i + chunkSize);
     const batch = chunk.map(p => ({
       sql: `INSERT INTO snapshots (pet_name, value, neon_value, mega_value, captured_at) VALUES (?, ?, ?, ?, ?)`,
       args: [p.name, p.value, p.neonValue, p.megaValue, now],
     }));
     await db.batch(batch);
   }
-  console.log(`[db] saved ${pets.length} snapshots`);
+  console.log(`[db] saved ${changed.length} changed snapshots (skipped ${pets.length - changed.length} unchanged)`);
 }
 
 // ── Trending Cache ─────────────────────────────────────────────────────────────
