@@ -265,7 +265,6 @@ async function scrapeAllPets(force = false) {
 
     petCache = mapped;
     lastFetch = Date.now();
-    await addSnapshot(mapped);
     console.log(`[done] ${mapped.length} pets cached & saved`);
     return mapped;
   } finally {
@@ -274,7 +273,7 @@ async function scrapeAllPets(force = false) {
 }
 
 // ── Auto tasks every 30 min ───────────────────────────────────────────────────
-const INTERVAL = 30 * 60 * 1000;
+const INTERVAL = 6 * 60 * 60 * 1000;
 
 async function autoTasks() {
   if (!petCache.length) return;
