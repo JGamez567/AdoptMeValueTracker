@@ -19,7 +19,11 @@ const db = createClient({
   url: process.env.TURSO_URL,
   authToken: process.env.TURSO_TOKEN,
 });
-
+const { createClient: createSupabase } = require("@supabase/supabase-js");
+const supabase = createSupabase(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SECRET_KEY
+);
 async function initDb() {
   await db.execute(`
     CREATE TABLE IF NOT EXISTS snapshots (
@@ -44,8 +48,81 @@ async function cleanOldData() {
   });
   console.log(`[db] cleaned old data, removed ${result.rowsAffected} rows`);
 }
+// Map one Elvebredd pet into its (tier × potion) variants
+function buildVariants(p) {
+  const tiers = [
+    { neon: "normal", base: p.valueNoPot ?? p.value,    fly: p.valueFly, ride: p.valueRide, flyride: p.valueFlyRide },
+    { neon: "neon",   base: p.neonNoPot ?? p.neonValue, fly: p.neonFly,  ride: p.neonRide,  flyride: p.neonFlyRide },
+    { neon: "mega",   base: p.megaNoPot ?? p.megaValue, fly: p.megaFly,  ride: p.megaRide,  flyride: p.megaFlyRide },
+  ];
+  const out = [];
+  for (const t of tiers) {
+    if (t.base    != null) out.push({ neon: t.neon, fly: false, ride: false, value: t.base });
+    if (t.fly     != null) out.push({ neon: t.neon, fly: true,  ride: false, value: t.fly });
+    if (t.ride    != null) out.push({ neon: t.neon, fly: false, ride: true,  value: t.ride });
+    if (t.flyride != null) out.push({ neon: t.neon, fly: true,  ride: true,  value: t.flyride });
+  }
+  return out;
+}
+
+async function writeToSupabase(pets) {
+  // 1) upsert the catalog (fixed set — upsert updates, never duplicates)
+  const petRows = pets.map(p => ({ name: p.name, rarity: p.rarity, icon_url: p.image }));
+  const { data: petData, error: petErr } = await supabase
+    .from("pets").upsert(petRows, { onConflict: "name" }).select("id, name");
+  if (petErr) throw petErr;
+  const petId = new Map(petData.map(r => [r.name, r.id]));
+
+  // 2) upsert the variants (also a fixed set)
+  const variantRows = [];
+  for (const p of pets) {
+    const id = petId.get(p.name);
+    if (!id) continue;
+    for (const v of buildVariants(p)) variantRows.push({ pet_id: id, neon: v.neon, fly: v.fly, ride: v.ride });
+  }
+  const { data: varData, error: varErr } = await supabase
+    .from("pet_variants").upsert(variantRows, { onConflict: "pet_id,neon,fly,ride" })
+    .select("id, pet_id, neon, fly, ride");
+  if (varErr) throw varErr;
+  const variantId = new Map(varData.map(r => [`${r.pet_id}|${r.neon}|${r.fly}|${r.ride}`, r.id]));
+
+  // 3) look up the latest stored value per variant (change-detection)
+  const { data: currentVals, error: curErr } = await supabase
+    .from("current_pet_values").select("pet_variant_id, value");
+  if (curErr) throw curErr;
+  const lastValue = new Map(currentVals.map(r => [r.pet_variant_id, Number(r.value)]));
+
+  // 4) APPEND only the values that actually changed (or are brand new)
+  const valueRows = [];
+  for (const p of pets) {
+    const id = petId.get(p.name);
+    if (!id) continue;
+    for (const v of buildVariants(p)) {
+      const vid = variantId.get(`${id}|${v.neon}|${v.fly}|${v.ride}`);
+      if (vid == null) continue;
+      if (lastValue.get(vid) === Number(v.value)) continue;  // unchanged → skip
+      valueRows.push({ pet_variant_id: vid, value: v.value });
+    }
+  }
+
+  if (!valueRows.length) {
+    console.log("[supabase] no value changes — nothing to store");
+    return;
+  }
+  for (let i = 0; i < valueRows.length; i += 500) {
+    const { error } = await supabase.from("pet_values").insert(valueRows.slice(i, i + 500));
+    if (error) throw error;
+  }
+  console.log(`[supabase] stored ${valueRows.length} changed values`);
+}
 
 async function addSnapshot(pets) {
+  // mirror into Supabase (runs its own change-detection; never breaks Turso)
+  try {
+    await writeToSupabase(pets);
+  } catch (e) {
+    console.log("[supabase] write skipped:", e.message);
+  }
   const now = Date.now();
 
   // Get the latest stored value for every pet (one query)
