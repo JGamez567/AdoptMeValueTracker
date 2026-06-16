@@ -41,7 +41,39 @@ function buildVariants(p) {
   }
   return out;
 }
+// ── Daily net-worth snapshot for every user ─────────────────────────────────────
+async function snapshotAllPortfolios() {
+  // 1) latest value per variant (one read)
+  const { data: vals, error: valErr } = await supabase
+    .from("current_pet_values").select("pet_variant_id, value");
+  if (valErr) throw valErr;
+  const valueByVariant = new Map(vals.map(v => [v.pet_variant_id, Number(v.value)]));
 
+  // 2) every user's holdings (one read)
+  const { data: items, error: itemErr } = await supabase
+    .from("portfolio_items").select("user_id, pet_variant_id, quantity");
+  if (itemErr) throw itemErr;
+  if (!items.length) { console.log("[snapshot] no portfolios to snapshot"); return; }
+
+  // 3) group holdings by user and compute totals
+  const byUser = new Map();
+  for (const it of items) {
+    const unit = valueByVariant.get(it.pet_variant_id) ?? 0;
+    const entry = byUser.get(it.user_id) ?? { total: 0, holdings: [] };
+    entry.total += unit * it.quantity;
+    entry.holdings.push({ pet_variant_id: it.pet_variant_id, quantity: it.quantity, value: unit });
+    byUser.set(it.user_id, entry);
+  }
+
+  // 4) write one snapshot row per user
+  const rows = [...byUser.entries()].map(([user_id, e]) => ({
+    user_id, total_value: e.total, holdings: e.holdings,
+  }));
+  const { error: insErr } = await supabase.from("portfolio_snapshots").insert(rows);
+  if (insErr) throw insErr;
+
+  console.log(`[snapshot] saved net worth for ${rows.length} users`);
+}
 // ── Write changed values to Supabase (change-detection) ─────────────────────────
 async function writeToSupabase(pets) {
   // 1) upsert the catalog (fixed set — upsert updates, never duplicates)
@@ -239,3 +271,14 @@ app.listen(PORT, () => {
   setInterval(scheduledScrape, SCRAPE_INTERVAL);  // then every 6 hours
   console.log("[auto] scraping every 6 hours");
 });
+// daily portfolio snapshots
+const DAY = 24 * 60 * 60 * 1000;
+async function dailySnapshotJob() {
+  try {
+    await snapshotAllPortfolios();
+  } catch (e) {
+    console.log("[snapshot] failed:", e.message);
+  }
+}
+setInterval(dailySnapshotJob, DAY);
+dailySnapshotJob(); // also run once at startup so you get a point today
