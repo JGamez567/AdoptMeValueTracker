@@ -247,7 +247,11 @@ async function scheduledScrape() {
 
 // ── Routes (optional — the new app reads Supabase directly) ─────────────────────
 app.get("/health", (req, res) => res.json({ ok: true, cachedPets: petCache.length }));
-
+// Manually trigger a portfolio snapshot (for testing)
+app.get("/api/snapshot", (req, res) => {
+  dailySnapshotJob().catch(console.error);
+  res.json({ ok: true, message: "Snapshot triggered — check logs and portfolio_snapshots." });
+});
 // Current cached values — handy for debugging
 app.get("/api/pets/all", async (req, res) => {
   try {
