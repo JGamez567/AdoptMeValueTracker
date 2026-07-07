@@ -1,31 +1,22 @@
-// ── Adopt Me scraper → Supabase ───────────────────────────────────────────────
-// Scrapes Elvebredd every 6 hours and writes CHANGED pet values to Supabase.
-// No Turso, no HTTP-triggered snapshots — a clean scheduled data feeder.
+// scrape.js
+// Run-once Elvebredd value scraper for GitHub Actions.
+// Scrapes the calculator, writes CHANGED pet values to Supabase, then EXITS.
+// No Express / no server / no setInterval — the workflow cron is the scheduler.
+//
+// Env (from GitHub repo secrets): SUPABASE_URL, SUPABASE_SECRET_KEY (service_role).
 
-process.env.PUPPETEER_CACHE_DIR = "/opt/render/.cache/puppeteer";
-
-const express = require("express");
 const puppeteer = require("puppeteer-extra");
-const chromium = require("@sparticuz/chromium");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
 puppeteer.use(StealthPlugin());
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-
-app.use(cors({ origin: "*" }));
-app.use(express.json());
-
-// ── Supabase ───────────────────────────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SECRET_KEY
 );
 
-// ── Map one Elvebredd pet into its (tier × potion) variants ─────────────────────
+// ── Map one Elvebredd pet into its (tier × potion) variants ─────────────────
 function buildVariants(p) {
   const tiers = [
     { neon: "normal", base: p.valueNoPot ?? p.value,    fly: p.valueFly, ride: p.valueRide, flyride: p.valueFlyRide },
@@ -41,42 +32,10 @@ function buildVariants(p) {
   }
   return out;
 }
-// ── Daily net-worth snapshot for every user ─────────────────────────────────────
-async function snapshotAllPortfolios() {
-  // 1) latest value per variant (one read)
-  const { data: vals, error: valErr } = await supabase
-    .from("current_pet_values").select("pet_variant_id, value");
-  if (valErr) throw valErr;
-  const valueByVariant = new Map(vals.map(v => [v.pet_variant_id, Number(v.value)]));
 
-  // 2) every user's holdings (one read)
-  const { data: items, error: itemErr } = await supabase
-    .from("portfolio_items").select("user_id, pet_variant_id, quantity");
-  if (itemErr) throw itemErr;
-  if (!items.length) { console.log("[snapshot] no portfolios to snapshot"); return; }
-
-  // 3) group holdings by user and compute totals
-  const byUser = new Map();
-  for (const it of items) {
-    const unit = valueByVariant.get(it.pet_variant_id) ?? 0;
-    const entry = byUser.get(it.user_id) ?? { total: 0, holdings: [] };
-    entry.total += unit * it.quantity;
-    entry.holdings.push({ pet_variant_id: it.pet_variant_id, quantity: it.quantity, value: unit });
-    byUser.set(it.user_id, entry);
-  }
-
-  // 4) write one snapshot row per user
-  const rows = [...byUser.entries()].map(([user_id, e]) => ({
-    user_id, total_value: e.total, holdings: e.holdings,
-  }));
-  const { error: insErr } = await supabase.from("portfolio_snapshots").insert(rows);
-  if (insErr) throw insErr;
-
-  console.log(`[snapshot] saved net worth for ${rows.length} users`);
-}
-// ── Write changed values to Supabase (change-detection) ─────────────────────────
+// ── Write changed values to Supabase (change-detection) ─────────────────────
 async function writeToSupabase(pets) {
-  // 1) upsert the catalog (fixed set — upsert updates, never duplicates)
+  // 1) upsert the catalog
   const petRows = pets.map(p => ({ name: p.name, rarity: p.rarity, icon_url: p.image }));
   const { data: petData, error: petErr } = await supabase
     .from("pets").upsert(petRows, { onConflict: "name" }).select("id, name");
@@ -102,7 +61,7 @@ async function writeToSupabase(pets) {
   if (curErr) throw curErr;
   const lastValue = new Map(currentVals.map(r => [r.pet_variant_id, Number(r.value)]));
 
-  // 4) APPEND only the values that actually changed (or are brand new)
+  // 4) APPEND only values that actually changed (or are brand new)
   const valueRows = [];
   for (const p of pets) {
     const id = petId.get(p.name);
@@ -110,7 +69,7 @@ async function writeToSupabase(pets) {
     for (const v of buildVariants(p)) {
       const vid = variantId.get(`${id}|${v.neon}|${v.fly}|${v.ride}`);
       if (vid == null) continue;
-      if (lastValue.get(vid) === Number(v.value)) continue;  // unchanged → skip
+      if (lastValue.get(vid) === Number(v.value)) continue;   // unchanged → skip
       valueRows.push({ pet_variant_id: vid, value: v.value });
     }
   }
@@ -126,24 +85,12 @@ async function writeToSupabase(pets) {
   console.log(`[supabase] stored ${valueRows.length} changed values`);
 }
 
-// ── Cache (only serves the optional debug endpoints below) ──────────────────────
-let petCache = [];
-let lastFetch = 0;
-const CACHE_TTL = 5 * 60 * 1000;
-
-// ── Scraper ──────────────────────────────────────────────────────────────────────
-async function scrapeAllPets(force = false) {
-  if (!force && lastFetch && Date.now() - lastFetch < CACHE_TTL) {
-    console.log(`[cache] returning ${petCache.length} pets`);
-    return petCache;
-  }
-
+// ── Scraper ─────────────────────────────────────────────────────────────────
+async function scrapeAllPets() {
   console.log("[scrape] launching browser...");
   const browser = await puppeteer.launch({
-    args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(),
-    headless: chromium.headless,
+    headless: "new",
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
   });
 
   const page = await browser.newPage();
@@ -222,8 +169,6 @@ async function scrapeAllPets(force = false) {
       megaNoPot:    p["mvalue - nopotion"] ?? null,
     }));
 
-    petCache = mapped;
-    lastFetch = Date.now();
     console.log(`[done] ${mapped.length} pets scraped`);
     return mapped;
   } finally {
@@ -231,58 +176,19 @@ async function scrapeAllPets(force = false) {
   }
 }
 
-// ── Scheduled scrape → Supabase (runs on its own, no HTTP traffic needed) ───────
-const SCRAPE_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
-
-async function scheduledScrape() {
+// ── Main (run once, then exit) ──────────────────────────────────────────────
+(async () => {
   try {
-    console.log("[auto] scheduled scrape starting...");
-    const pets = await scrapeAllPets(true);   // force a fresh scrape
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
+      throw new Error("Missing SUPABASE_URL or SUPABASE_SECRET_KEY env vars.");
+    }
+    console.log("[run] scrape starting…");
+    const pets = await scrapeAllPets();
     await writeToSupabase(pets);
-    console.log("[auto] scheduled scrape complete");
+    console.log("[run] scrape complete ✅");
+    process.exit(0);
   } catch (e) {
-    console.log("[auto] scrape failed:", e.message);
+    console.error("[run] scrape FAILED ❌:", e.message);
+    process.exit(1); // non-zero → GitHub marks the run failed (red ✗)
   }
-}
-
-// ── Routes (optional — the new app reads Supabase directly) ─────────────────────
-app.get("/health", (req, res) => res.json({ ok: true, cachedPets: petCache.length }));
-// Manually trigger a portfolio snapshot (for testing)
-app.get("/api/snapshot", (req, res) => {
-  dailySnapshotJob().catch(console.error);
-  res.json({ ok: true, message: "Snapshot triggered — check logs and portfolio_snapshots." });
-});
-// Current cached values — handy for debugging
-app.get("/api/pets/all", async (req, res) => {
-  try {
-    const pets = await scrapeAllPets(req.query.refresh === "true");
-    res.json({ ok: true, count: pets.length, pets });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Manually trigger a scrape + Supabase write (great for testing right now)
-app.get("/api/scrape", (req, res) => {
-  scheduledScrape().catch(console.error);
-  res.json({ ok: true, message: "Scrape triggered — check the logs and Supabase." });
-});
-
-// ── Start ──────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n✅  Adopt Me scraper running → port ${PORT}\n`);
-  scheduledScrape();                              // run once right at startup
-  setInterval(scheduledScrape, SCRAPE_INTERVAL);  // then every 6 hours
-  console.log("[auto] scraping every 6 hours");
-});
-// daily portfolio snapshots
-const DAY = 24 * 60 * 60 * 1000;
-async function dailySnapshotJob() {
-  try {
-    await snapshotAllPortfolios();
-  } catch (e) {
-    console.log("[snapshot] failed:", e.message);
-  }
-}
-setInterval(dailySnapshotJob, DAY);
-dailySnapshotJob(); // also run once at startup so you get a point today
+})();

@@ -1,0 +1,36 @@
+name: Daily snapshot
+
+# Runs once a day at 00:05 UTC (just after a scrape, so values are fresh).
+# Also runnable on-demand from the Actions tab.
+on:
+  schedule:
+    - cron: "5 0 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      # No browser needed for snapshots — it only reads/writes Supabase.
+      - name: Run snapshot
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node snapshot.js

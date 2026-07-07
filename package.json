@@ -1,24 +1,16 @@
 {
-  "name": "adopt-me-tracker-server",
+  "name": "petora-scraper",
   "version": "1.0.0",
-  "description": "Elvebredd scraper + history API",
-  "main": "server.js",
+  "description": "Scheduled Elvebredd value scraper + daily portfolio snapshots for Petora (runs on GitHub Actions).",
+  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "scrape": "node scrape.js",
+    "snapshot": "node snapshot.js"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.3",
-    "@sparticuz/chromium": "^148.0.0",
-    "@supabase/supabase-js": "^2.108.2",
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "puppeteer-core": "^24.42.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "sql.js": "^1.14.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.3"
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
