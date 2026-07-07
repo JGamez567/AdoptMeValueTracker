@@ -67,6 +67,6 @@ async function snapshotAllPortfolios() {
     process.exit(0);
   } catch (e) {
     console.error("[run] snapshot FAILED ❌:", e.message);
-    process.exit(1);s
+    process.exit(1);
   }
 })();
