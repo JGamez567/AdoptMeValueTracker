@@ -1,7 +1,8 @@
 // scrape.js
 // Run-once Elvebredd value scraper for GitHub Actions.
-// Scrapes the calculator, writes CHANGED pet values to Supabase, then EXITS.
-// No Express / no server / no setInterval — the workflow cron is the scheduler.
+// Scrapes the calculator, writes CHANGED pet/egg/pet-wear values to Supabase,
+// then EXITS. No Express / no server / no setInterval — the workflow cron is
+// the scheduler.
 //
 // Env (from GitHub repo secrets): SUPABASE_URL, SUPABASE_SECRET_KEY (service_role).
 
@@ -16,7 +17,26 @@ const supabase = createClient(
   process.env.SUPABASE_SECRET_KEY
 );
 
-// ── Map one Elvebredd pet into its (tier × potion) variants ─────────────────
+// ── Which Elvebredd item types we ingest, and the category each maps to ──────
+// Elvebredd's `type` strings for non-pets aren't documented, so this map covers
+// the likely spellings; every run logs the distinct types it saw so unmatched
+// ones can be added here. Anything not in this map is skipped (toys, vehicles,
+// strollers, etc. stay out until you decide to add them).
+const TYPE_TO_CATEGORY = {
+  "pets": "pet",
+  "eggs": "egg",
+  "egg": "egg",
+  "pet wear": "pet_wear",
+  "petwear": "pet_wear",
+  "pet-wear": "pet_wear",
+  "pet_wear": "pet_wear",
+  "accessories": "pet_wear",
+};
+
+// ── Map one Elvebredd item into its (tier × potion) variants ─────────────────
+// Eggs and pet wear have no neon/mega tiers and no potions, so their Elvebredd
+// rows only carry a base value → this naturally produces a single
+// (normal, no-fly, no-ride) variant for them. No special-casing needed.
 function buildVariants(p) {
   const tiers = [
     { neon: "normal", base: p.valueNoPot ?? p.value,    fly: p.valueFly, ride: p.valueRide, flyride: p.valueFlyRide },
@@ -34,9 +54,14 @@ function buildVariants(p) {
 }
 
 // ── Write changed values to Supabase (change-detection) ─────────────────────
-async function writeToSupabase(pets) {
-  // 1) upsert the catalog
-  const petRows = pets.map(p => ({ name: p.name, rarity: p.rarity, icon_url: p.image }));
+async function writeToSupabase(items) {
+  // 1) upsert the catalog (now with category)
+  const petRows = items.map(p => ({
+    name: p.name,
+    rarity: p.rarity,
+    icon_url: p.image,
+    category: p.category,
+  }));
   const { data: petData, error: petErr } = await supabase
     .from("pets").upsert(petRows, { onConflict: "name" }).select("id, name");
   if (petErr) throw petErr;
@@ -44,7 +69,7 @@ async function writeToSupabase(pets) {
 
   // 2) upsert the variants
   const variantRows = [];
-  for (const p of pets) {
+  for (const p of items) {
     const id = petId.get(p.name);
     if (!id) continue;
     for (const v of buildVariants(p)) variantRows.push({ pet_id: id, neon: v.neon, fly: v.fly, ride: v.ride });
@@ -63,7 +88,7 @@ async function writeToSupabase(pets) {
 
   // 4) APPEND only values that actually changed (or are brand new)
   const valueRows = [];
-  for (const p of pets) {
+  for (const p of items) {
     const id = petId.get(p.name);
     if (!id) continue;
     for (const v of buildVariants(p)) {
@@ -86,7 +111,7 @@ async function writeToSupabase(pets) {
 }
 
 // ── Scraper ─────────────────────────────────────────────────────────────────
-async function scrapeAllPets() {
+async function scrapeAllItems() {
   console.log("[scrape] launching browser...");
   const browser = await puppeteer.launch({
     headless: "new",
@@ -131,7 +156,7 @@ async function scrapeAllPets() {
           if (depth === 0) { arrEnd = j; break; }
         }
         petData = JSON.parse(unescaped.slice(arrStart, arrEnd + 1));
-        console.log(`[scrape] extracted ${petData.length} pets`);
+        console.log(`[scrape] extracted ${petData.length} items`);
         break;
       }
     } catch (e) {
@@ -148,28 +173,46 @@ async function scrapeAllPets() {
 
     if (!petData || !petData.length) throw new Error("Could not extract pet data.");
 
-    const mapped = petData.filter(p => p.name && p.type === "pets").map(p => ({
-      name: p.name,
-      value:        p.rvalue ?? null,
-      neonValue:    p.nvalue ?? null,
-      megaValue:    p.mvalue ?? null,
-      rarity:       p.rarity ?? null,
-      image:        p.image ? `https://elvebredd.com${p.image}` : null,
-      valueFlyRide: p["rvalue - fly&ride"] ?? null,
-      valueFly:     p["rvalue - fly"]      ?? null,
-      valueRide:    p["rvalue - ride"]     ?? null,
-      valueNoPot:   p["rvalue - nopotion"] ?? null,
-      neonFlyRide:  p["nvalue - fly&ride"] ?? null,
-      neonFly:      p["nvalue - fly"]      ?? null,
-      neonRide:     p["nvalue - ride"]     ?? null,
-      neonNoPot:    p["nvalue - nopotion"] ?? null,
-      megaFlyRide:  p["mvalue - fly&ride"] ?? null,
-      megaFly:      p["mvalue - fly"]      ?? null,
-      megaRide:     p["mvalue - ride"]     ?? null,
-      megaNoPot:    p["mvalue - nopotion"] ?? null,
-    }));
+    // Log the distinct type strings Elvebredd uses, so unmatched categories
+    // are visible in the Actions log instead of silently dropped.
+    const typeCounts = {};
+    for (const p of petData) {
+      const t = (p.type ?? "(none)").toLowerCase();
+      typeCounts[t] = (typeCounts[t] ?? 0) + 1;
+    }
+    console.log("[scrape] item types found:", JSON.stringify(typeCounts));
+    const unmatched = Object.keys(typeCounts).filter(t => !(t in TYPE_TO_CATEGORY) && t !== "(none)");
+    if (unmatched.length) {
+      console.log(`[scrape] skipped types (add to TYPE_TO_CATEGORY to ingest): ${unmatched.join(", ")}`);
+    }
 
-    console.log(`[done] ${mapped.length} pets scraped`);
+    const mapped = petData
+      .filter(p => p.name && TYPE_TO_CATEGORY[(p.type ?? "").toLowerCase()])
+      .map(p => ({
+        name: p.name,
+        category:     TYPE_TO_CATEGORY[(p.type ?? "").toLowerCase()],
+        value:        p.rvalue ?? null,
+        neonValue:    p.nvalue ?? null,
+        megaValue:    p.mvalue ?? null,
+        rarity:       p.rarity ?? null,
+        image:        p.image ? `https://elvebredd.com${p.image}` : null,
+        valueFlyRide: p["rvalue - fly&ride"] ?? null,
+        valueFly:     p["rvalue - fly"]      ?? null,
+        valueRide:    p["rvalue - ride"]     ?? null,
+        valueNoPot:   p["rvalue - nopotion"] ?? null,
+        neonFlyRide:  p["nvalue - fly&ride"] ?? null,
+        neonFly:      p["nvalue - fly"]      ?? null,
+        neonRide:     p["nvalue - ride"]     ?? null,
+        neonNoPot:    p["nvalue - nopotion"] ?? null,
+        megaFlyRide:  p["mvalue - fly&ride"] ?? null,
+        megaFly:      p["mvalue - fly"]      ?? null,
+        megaRide:     p["mvalue - ride"]     ?? null,
+        megaNoPot:    p["mvalue - nopotion"] ?? null,
+      }));
+
+    const byCat = {};
+    for (const m of mapped) byCat[m.category] = (byCat[m.category] ?? 0) + 1;
+    console.log(`[done] ${mapped.length} items scraped:`, JSON.stringify(byCat));
     return mapped;
   } finally {
     await browser.close();
@@ -183,8 +226,8 @@ async function scrapeAllPets() {
       throw new Error("Missing SUPABASE_URL or SUPABASE_SECRET_KEY env vars.");
     }
     console.log("[run] scrape starting…");
-    const pets = await scrapeAllPets();
-    await writeToSupabase(pets);
+    const items = await scrapeAllItems();
+    await writeToSupabase(items);
     console.log("[run] scrape complete ✅");
     process.exit(0);
   } catch (e) {
