@@ -5,6 +5,11 @@
 // the scheduler.
 //
 // Env (from GitHub repo secrets): SUPABASE_URL, SUPABASE_SECRET_KEY (service_role).
+//
+// v3: catalog identity is (name, category) — Elvebredd reuses names across
+// categories (e.g. a pet and a pet-wear item can share a name), so upserts key
+// on both, and same-key duplicates within one scrape are collapsed before
+// writing (postgres forbids one upsert batch touching the same row twice).
 
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
@@ -18,25 +23,20 @@ const supabase = createClient(
 );
 
 // ── Which Elvebredd item types we ingest, and the category each maps to ──────
-// Elvebredd's `type` strings for non-pets aren't documented, so this map covers
-// the likely spellings; every run logs the distinct types it saw so unmatched
-// ones can be added here. Anything not in this map is skipped (toys, vehicles,
-// strollers, etc. stay out until you decide to add them).
+// Types seen in the wild: pets, toys, strollers, gifts, other, food, pet wear,
+// vehicles, eggs, stickers. Only these three are ingested; the rest are logged
+// and skipped. Add lines here if you ever want more.
 const TYPE_TO_CATEGORY = {
   "pets": "pet",
   "eggs": "egg",
-  "egg": "egg",
   "pet wear": "pet_wear",
-  "petwear": "pet_wear",
-  "pet-wear": "pet_wear",
-  "pet_wear": "pet_wear",
-  "accessories": "pet_wear",
 };
 
+const catKey = (name, category) => `${name}|${category}`;
+
 // ── Map one Elvebredd item into its (tier × potion) variants ─────────────────
-// Eggs and pet wear have no neon/mega tiers and no potions, so their Elvebredd
-// rows only carry a base value → this naturally produces a single
-// (normal, no-fly, no-ride) variant for them. No special-casing needed.
+// Eggs and pet wear have no neon/mega tiers and no potions, so their rows only
+// carry a base value → a single (normal, no-fly, no-ride) variant.
 function buildVariants(p) {
   const tiers = [
     { neon: "normal", base: p.valueNoPot ?? p.value,    fly: p.valueFly, ride: p.valueRide, flyride: p.valueFlyRide },
@@ -55,22 +55,36 @@ function buildVariants(p) {
 
 // ── Write changed values to Supabase (change-detection) ─────────────────────
 async function writeToSupabase(items) {
-  // 1) upsert the catalog (now with category)
-  const petRows = items.map(p => ({
+  // 0) collapse duplicates within this scrape: one row per (name, category).
+  //    (Two identical entries in Elvebredd's payload would otherwise make the
+  //    upsert touch the same row twice → postgres error.)
+  const seen = new Map();
+  for (const p of items) {
+    const k = catKey(p.name, p.category);
+    if (!seen.has(k)) seen.set(k, p);
+  }
+  const unique = [...seen.values()];
+  if (unique.length !== items.length) {
+    console.log(`[supabase] collapsed ${items.length - unique.length} duplicate (name, category) rows`);
+  }
+
+  // 1) upsert the catalog — identity is (name, category)
+  const petRows = unique.map(p => ({
     name: p.name,
     rarity: p.rarity,
     icon_url: p.image,
     category: p.category,
   }));
   const { data: petData, error: petErr } = await supabase
-    .from("pets").upsert(petRows, { onConflict: "name" }).select("id, name");
+    .from("pets").upsert(petRows, { onConflict: "name,category" })
+    .select("id, name, category");
   if (petErr) throw petErr;
-  const petId = new Map(petData.map(r => [r.name, r.id]));
+  const petId = new Map(petData.map(r => [catKey(r.name, r.category), r.id]));
 
   // 2) upsert the variants
   const variantRows = [];
-  for (const p of items) {
-    const id = petId.get(p.name);
+  for (const p of unique) {
+    const id = petId.get(catKey(p.name, p.category));
     if (!id) continue;
     for (const v of buildVariants(p)) variantRows.push({ pet_id: id, neon: v.neon, fly: v.fly, ride: v.ride });
   }
@@ -88,8 +102,8 @@ async function writeToSupabase(items) {
 
   // 4) APPEND only values that actually changed (or are brand new)
   const valueRows = [];
-  for (const p of items) {
-    const id = petId.get(p.name);
+  for (const p of unique) {
+    const id = petId.get(catKey(p.name, p.category));
     if (!id) continue;
     for (const v of buildVariants(p)) {
       const vid = variantId.get(`${id}|${v.neon}|${v.fly}|${v.ride}`);
