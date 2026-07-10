@@ -207,7 +207,7 @@ console.log("[debug] sample pet wear item:", JSON.stringify(sampleWear));
       .map(p => ({
         name: p.name,
         category:     TYPE_TO_CATEGORY[(p.type ?? "").toLowerCase()],
-        value:        p.rvalue ?? null,
+        value:        p.rvalue ?? p.value ?? null,
         neonValue:    p.nvalue ?? null,
         megaValue:    p.mvalue ?? null,
         rarity:       p.rarity ?? null,
