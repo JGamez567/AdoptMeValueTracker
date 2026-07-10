@@ -195,6 +195,8 @@ async function scrapeAllItems() {
       typeCounts[t] = (typeCounts[t] ?? 0) + 1;
     }
     console.log("[scrape] item types found:", JSON.stringify(typeCounts));
+    const sampleWear = petData.find(p => (p.type ?? "").toLowerCase() === "pet wear");
+console.log("[debug] sample pet wear item:", JSON.stringify(sampleWear));
     const unmatched = Object.keys(typeCounts).filter(t => !(t in TYPE_TO_CATEGORY) && t !== "(none)");
     if (unmatched.length) {
       console.log(`[scrape] skipped types (add to TYPE_TO_CATEGORY to ingest): ${unmatched.join(", ")}`);
