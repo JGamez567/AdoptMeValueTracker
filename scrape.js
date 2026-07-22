@@ -10,6 +10,11 @@
 // categories (e.g. a pet and a pet-wear item can share a name), so upserts key
 // on both, and same-key duplicates within one scrape are collapsed before
 // writing (postgres forbids one upsert batch touching the same row twice).
+//
+// v4: the change-detection read of current_pet_values is now PAGINATED.
+// Supabase REST caps every select at 1,000 rows, so the old unpaged read only
+// saw the first 1,000 variants — everything past that looked "new" every run
+// and got re-inserted even when unchanged, silently bloating pet_values.
 
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
@@ -94,10 +99,26 @@ async function writeToSupabase(items) {
   if (varErr) throw varErr;
   const variantId = new Map(varData.map(r => [`${r.pet_id}|${r.neon}|${r.fly}|${r.ride}`, r.id]));
 
-  // 3) latest stored value per variant (for change-detection)
-  const { data: currentVals, error: curErr } = await supabase
-    .from("current_pet_values").select("pet_variant_id, value");
-  if (curErr) throw curErr;
+  // 3) latest stored value per variant (for change-detection), PAGINATED —
+  //    Supabase REST caps every select at 1,000 rows no matter what limit
+  //    you ask for. The variant count is well past 1,000, and an unpaged
+  //    read here silently re-inserted "unchanged" values for everything
+  //    past row 1,000 on every run.
+  const currentVals = [];
+  const PAGE = 1000;
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("current_pet_values")
+      .select("pet_variant_id, value")
+      .order("pet_variant_id")
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    currentVals.push(...(data ?? []));
+    if (!data || data.length < PAGE) break; // short page → done
+    from += PAGE;
+  }
+  console.log(`[supabase] loaded ${currentVals.length} current values for change-detection`);
   const lastValue = new Map(currentVals.map(r => [r.pet_variant_id, Number(r.value)]));
 
   // 4) APPEND only values that actually changed (or are brand new)
@@ -195,8 +216,6 @@ async function scrapeAllItems() {
       typeCounts[t] = (typeCounts[t] ?? 0) + 1;
     }
     console.log("[scrape] item types found:", JSON.stringify(typeCounts));
-    const sampleWear = petData.find(p => (p.type ?? "").toLowerCase() === "pet wear");
-console.log("[debug] sample pet wear item:", JSON.stringify(sampleWear));
     const unmatched = Object.keys(typeCounts).filter(t => !(t in TYPE_TO_CATEGORY) && t !== "(none)");
     if (unmatched.length) {
       console.log(`[scrape] skipped types (add to TYPE_TO_CATEGORY to ingest): ${unmatched.join(", ")}`);
