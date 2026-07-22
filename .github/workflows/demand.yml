@@ -1,0 +1,26 @@
+name: Scrape AMVGG Demand
+
+on:
+  schedule:
+    - cron: "30 8 */5 * *"   # every 5 days at 8:30 UTC
+  workflow_dispatch: {}     # lets you run it manually from the Actions tab
+
+jobs:
+  scrape-demand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run demand scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node scrape_demand.js
