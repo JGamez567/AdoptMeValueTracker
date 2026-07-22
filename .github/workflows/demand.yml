@@ -20,7 +20,7 @@ jobs:
         run: npm install
 
       - name: Install Chrome for puppeteer
-        run: npx puppeteer browsers install chrome
+        run: node node_modules/puppeteer/install.mjs
 
       - name: Run demand scraper
         env:
