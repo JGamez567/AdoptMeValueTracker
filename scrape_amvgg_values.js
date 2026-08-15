@@ -17,6 +17,17 @@
 //   - Active pills carry a solid bg class; inactive ones carry "bg-white/5".
 //     That's how we read current state instead of assuming it.
 //
+// ── AMVGG KEEPS NO HISTORY ───────────────────────────────────────────────────
+// Elvebredd rows in pet_values are a real append-only time series (graphs,
+// Rising/Falling, portfolio history all read it). AMVGG is NOT. It exists for
+// exactly one feature — the Trade Calculator's "see if it's a win on AMVGG"
+// toggle — which only ever reads the CURRENT value. So after each run we prune
+// every AMVGG row that isn't the newest for its variant.
+//
+// The order is INSERT THEN PRUNE, never the reverse. Deleting first would
+// leave a window where the calculator finds no AMVGG value and shows the
+// "no value" warning on every pet mid-trade.
+//
 // UNIT WARNING: AMVGG values are NOT in the same unit as Elvebredd. A Bat
 // Dragon is 4.97 here and thousands on Elvebredd. These are separate scales
 // and must never be summed, averaged, or compared with each other. That's why
@@ -281,9 +292,15 @@ async function writeValues(items) {
     variants.map((v) => [variantKey(v.pet_id, v.neon, v.fly, v.ride), v.id])
   );
 
-  // 3) current AMVGG values, so we only append on CHANGE. pet_values is an
-  //    append-only time series — writing unchanged rows every run is exactly
-  //    the bug that bloated the table before the pagination fix.
+  // 3) current AMVGG values, so we only write on CHANGE.
+  //
+  //    Still worth doing even though we prune: an unchanged value that gets
+  //    re-inserted and then pruned is a pointless write plus a pointless
+  //    delete, and it churns the table's dead-tuple count for nothing.
+  //
+  //    current_pet_values is a DISTINCT ON view, so this reads correctly
+  //    whether there's one AMVGG row behind each variant or a hundred — which
+  //    means the prune can never break the change detection.
   const current = await readAll(
     "current_pet_values",
     "pet_variant_id, value, source",
@@ -343,13 +360,33 @@ async function writeValues(items) {
     return;
   }
 
-  // 5) INSERT (not upsert) — this is an append-only history table.
+  // 5) INSERT, not upsert. pet_values is structurally an append-only table
+  //    (Elvebredd genuinely uses it as one), so we add rows here and let the
+  //    prune step below collapse AMVGG back down to current afterwards.
   for (let i = 0; i < inserts.length; i += 500) {
     const { error } = await supabase.from("pet_values").insert(inserts.slice(i, i + 500));
     if (error) throw error;
     console.log(`[supabase] inserted ${Math.min(i + 500, inserts.length)}/${inserts.length}`);
   }
   console.log(`[supabase] stored ${inserts.length} ${SOURCE} values ✅`);
+}
+
+// ── Prune superseded AMVGG rows ──────────────────────────────────────────────
+// Keeps exactly one AMVGG row per variant: the newest. Elvebredd rows are
+// never touched — the SQL function filters on source itself.
+//
+// Deliberately NOT fatal. By the time this runs the values are already stored
+// and correct; a failed prune only means some extra rows survive until next
+// run, which is not worth failing a workflow (and going red) over. It warns
+// loudly instead so a persistent failure is still visible in the log.
+async function pruneHistory() {
+  console.log(`[prune] collapsing ${SOURCE} history to current values…`);
+  const { data, error } = await supabase.rpc("prune_amvgg_values");
+  if (error) {
+    console.log(`[prune] WARNING: prune failed (values are still correct): ${error.message}`);
+    return;
+  }
+  console.log(`[prune] removed ${data ?? 0} superseded ${SOURCE} row(s) ✅`);
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -361,6 +398,10 @@ async function writeValues(items) {
     console.log(`[run] ${SOURCE} value scrape starting…`);
     const items = await scrapeValues();
     await writeValues(items);
+    // Runs unconditionally — writeValues() returns early when nothing changed,
+    // so putting this inside it would skip the prune on no-change runs and let
+    // leftovers from a previously failed prune sit around indefinitely.
+    await pruneHistory();
     console.log(`[run] ${SOURCE} value scrape complete ✅`);
     process.exit(0);
   } catch (e) {
